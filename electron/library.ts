@@ -1,0 +1,289 @@
+import { createHash, randomUUID } from "node:crypto";
+import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { parseFile } from "music-metadata";
+
+const AUDIO_EXTENSIONS = new Set([".aac", ".aif", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma"]);
+const COVER_NAMES = ["cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"];
+const MUSICBRAINZ_USER_AGENT = "RecordShelf/0.2.0 (desktop-music-player)";
+
+export type ScanProgress = { phase: "discovering" | "reading" | "finishing"; current: number; total: number; file?: string };
+export type ArtworkProgress = { current: number; total: number; album: string; status: "searching" | "found" | "missing" | "error" };
+export type Track = { id: number; albumId: string; path: string; title: string; artist: string; album: string; albumArtist: string; trackNumber: number; discNumber: number; duration: number; year: number | null };
+export type Album = { id: string; title: string; artist: string; year: number | null; artworkUrl: string | null; artworkSource: "embedded" | "folder" | "musicbrainz" | null; tracks: Track[] };
+export type Playlist = { id: string; name: string; trackIds: number[] };
+export type ArtworkResult = { success: boolean; message: string; albumId: string };
+type Row = Record<string, unknown>;
+
+const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const normalise = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+const escapeLucene = (value: string) => value.replace(/([+\-&|!(){}[\]^"~*?:\\/])/g, "\\$1");
+
+export class MusicLibrary {
+  private readonly db: DatabaseSync;
+  private readonly artworkDirectory: string;
+
+  constructor(databasePath: string, artworkDirectory: string) {
+    this.db = new DatabaseSync(databasePath);
+    this.artworkDirectory = artworkDirectory;
+    this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS albums (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL, year INTEGER, artwork_path TEXT,
+        artwork_source TEXT, artwork_updated_at INTEGER NOT NULL DEFAULT 0, musicbrainz_id TEXT
+      );
+      CREATE TABLE IF NOT EXISTS tracks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL UNIQUE, source_root TEXT NOT NULL,
+        album_id TEXT NOT NULL REFERENCES albums(id) ON DELETE CASCADE, title TEXT NOT NULL, artist TEXT NOT NULL,
+        album TEXT NOT NULL, album_artist TEXT NOT NULL, track_number INTEGER NOT NULL DEFAULT 0,
+        disc_number INTEGER NOT NULL DEFAULT 0, duration REAL NOT NULL DEFAULT 0, year INTEGER,
+        modified_ms REAL NOT NULL, scan_token TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS tracks_album_id ON tracks(album_id);
+      CREATE INDEX IF NOT EXISTS tracks_source_root ON tracks(source_root);
+      CREATE TABLE IF NOT EXISTS playlists (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+      CREATE TABLE IF NOT EXISTS playlist_tracks (
+        playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+        track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE, position INTEGER NOT NULL,
+        PRIMARY KEY (playlist_id, position)
+      );
+    `);
+    this.ensureAlbumColumn("artwork_source", "TEXT");
+    this.ensureAlbumColumn("artwork_updated_at", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureAlbumColumn("musicbrainz_id", "TEXT");
+  }
+
+  private ensureAlbumColumn(name: string, definition: string): void {
+    const columns = this.db.prepare("PRAGMA table_info(albums)").all() as Row[];
+    if (!columns.some((column) => column.name === name)) this.db.exec(`ALTER TABLE albums ADD COLUMN ${name} ${definition}`);
+  }
+
+  getLibraryRoot(): string | null {
+    const row = this.db.prepare("SELECT value FROM settings WHERE key = 'library_root'").get() as Row | undefined;
+    return row ? String(row.value) : null;
+  }
+
+  getTrackPath(id: number): string | null {
+    const row = this.db.prepare("SELECT path FROM tracks WHERE id = ?").get(id) as Row | undefined;
+    return row ? String(row.path) : null;
+  }
+
+  getArtworkPath(albumId: string): string | null {
+    const row = this.db.prepare("SELECT artwork_path FROM albums WHERE id = ?").get(albumId) as Row | undefined;
+    return row?.artwork_path ? String(row.artwork_path) : null;
+  }
+
+  snapshot(): { root: string | null; albums: Album[]; playlists: Playlist[] } {
+    const albumRows = this.db.prepare("SELECT * FROM albums ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE").all() as Row[];
+    const trackRows = this.db.prepare(`SELECT id, album_id, path, title, artist, album, album_artist, track_number, disc_number, duration, year FROM tracks ORDER BY album_artist COLLATE NOCASE, album COLLATE NOCASE, disc_number, track_number, title COLLATE NOCASE`).all() as Row[];
+    const tracksByAlbum = new Map<string, Track[]>();
+    for (const row of trackRows) {
+      const albumId = String(row.album_id);
+      const track: Track = {
+        id: Number(row.id), albumId, path: String(row.path), title: String(row.title), artist: String(row.artist),
+        album: String(row.album), albumArtist: String(row.album_artist), trackNumber: Number(row.track_number),
+        discNumber: Number(row.disc_number), duration: Number(row.duration), year: row.year == null ? null : Number(row.year),
+      };
+      const list = tracksByAlbum.get(albumId) ?? [];
+      list.push(track);
+      tracksByAlbum.set(albumId, list);
+    }
+    const albums = albumRows.map((row): Album => ({
+      id: String(row.id), title: String(row.title), artist: String(row.artist), year: row.year == null ? null : Number(row.year),
+      artworkUrl: row.artwork_path ? `music-art://cover/${encodeURIComponent(String(row.id))}?v=${Number(row.artwork_updated_at ?? 0)}` : null,
+      artworkSource: (row.artwork_source as Album["artworkSource"]) ?? null,
+      tracks: tracksByAlbum.get(String(row.id)) ?? [],
+    })).filter((album) => album.tracks.length > 0);
+
+    const playlistRows = this.db.prepare("SELECT id, name FROM playlists ORDER BY name COLLATE NOCASE").all() as Row[];
+    const playlistTracks = this.db.prepare("SELECT playlist_id, track_id FROM playlist_tracks ORDER BY position").all() as Row[];
+    const idsByPlaylist = new Map<string, number[]>();
+    for (const row of playlistTracks) {
+      const id = String(row.playlist_id);
+      const list = idsByPlaylist.get(id) ?? [];
+      list.push(Number(row.track_id));
+      idsByPlaylist.set(id, list);
+    }
+    return { root: this.getLibraryRoot(), albums, playlists: playlistRows.map((row) => ({ id: String(row.id), name: String(row.name), trackIds: idsByPlaylist.get(String(row.id)) ?? [] })) };
+  }
+
+  createPlaylist(name: string): Playlist {
+    const id = randomUUID();
+    const cleanName = name.trim() || "Untitled Playlist";
+    this.db.prepare("INSERT INTO playlists (id, name) VALUES (?, ?)").run(id, cleanName);
+    return { id, name: cleanName, trackIds: [] };
+  }
+
+  deletePlaylist(playlistId: string): void {
+    this.db.prepare("DELETE FROM playlists WHERE id = ?").run(playlistId);
+  }
+
+  addToPlaylist(playlistId: string, trackId: number): void {
+    if (this.db.prepare("SELECT 1 FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?").get(playlistId, trackId)) return;
+    const positionRow = this.db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS next FROM playlist_tracks WHERE playlist_id = ?").get(playlistId) as Row;
+    this.db.prepare("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)").run(playlistId, trackId, Number(positionRow.next));
+  }
+
+  removeFromPlaylist(playlistId: string, trackId: number): void {
+    this.db.prepare("DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?").run(playlistId, trackId);
+  }
+
+  async scan(root: string, onProgress: (progress: ScanProgress) => void): Promise<void> {
+    const rootStat = await stat(root).catch(() => null);
+    if (!rootStat?.isDirectory()) throw new Error("The music folder is unavailable. Your existing catalogue was left unchanged.");
+    const scanToken = randomUUID();
+    await mkdir(this.artworkDirectory, { recursive: true });
+    onProgress({ phase: "discovering", current: 0, total: 0 });
+    const files = await this.findAudioFiles(root);
+    const existingCount = this.db.prepare("SELECT COUNT(*) AS count FROM tracks WHERE source_root = ?").get(root) as Row;
+    if (files.length === 0 && Number(existingCount.count) > 0) throw new Error("No audio files were visible on the share. The existing catalogue was retained in case the NAS is temporarily unavailable.");
+
+    const existingFile = this.db.prepare("SELECT modified_ms, album_id FROM tracks WHERE path = ?");
+    const markUnchanged = this.db.prepare("UPDATE tracks SET scan_token = ?, source_root = ? WHERE path = ?");
+    const updateLocalArtwork = this.db.prepare("UPDATE albums SET artwork_path = ?, artwork_source = ?, artwork_updated_at = ? WHERE id = ?");
+    const upsertAlbum = this.db.prepare(`
+      INSERT INTO albums (id, title, artist, year, artwork_path, artwork_source, artwork_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET title = excluded.title, artist = excluded.artist,
+        year = COALESCE(excluded.year, albums.year), artwork_path = COALESCE(excluded.artwork_path, albums.artwork_path),
+        artwork_source = CASE WHEN excluded.artwork_path IS NOT NULL THEN excluded.artwork_source ELSE albums.artwork_source END,
+        artwork_updated_at = CASE WHEN excluded.artwork_path IS NOT NULL THEN excluded.artwork_updated_at ELSE albums.artwork_updated_at END
+    `);
+    const upsertTrack = this.db.prepare(`
+      INSERT INTO tracks (path, source_root, album_id, title, artist, album, album_artist, track_number, disc_number, duration, year, modified_ms, scan_token)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(path) DO UPDATE SET album_id = excluded.album_id, title = excluded.title, artist = excluded.artist,
+        album = excluded.album, album_artist = excluded.album_artist, track_number = excluded.track_number,
+        disc_number = excluded.disc_number, duration = excluded.duration, year = excluded.year,
+        modified_ms = excluded.modified_ms, scan_token = excluded.scan_token, source_root = excluded.source_root
+    `);
+    const artworkFound = new Set<string>();
+    const artworkChecked = new Set<string>();
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      onProgress({ phase: "reading", current: index + 1, total: files.length, file: path.basename(file) });
+      try {
+        const fileStat = await stat(file);
+        const existing = existingFile.get(file) as Row | undefined;
+        if (existing && Math.abs(Number(existing.modified_ms) - fileStat.mtimeMs) < 1) {
+          markUnchanged.run(scanToken, root, file);
+          const existingAlbumId = existing.album_id ? String(existing.album_id) : null;
+          if (existingAlbumId && !artworkChecked.has(existingAlbumId) && !this.getArtworkPath(existingAlbumId)) {
+            artworkChecked.add(existingAlbumId);
+            const artwork = await this.cacheArtwork(existingAlbumId, file);
+            if (artwork) updateLocalArtwork.run(artwork.path, artwork.source, Date.now(), existingAlbumId);
+          }
+          continue;
+        }
+        const metadata = await parseFile(file, { duration: true, skipCovers: false });
+        const common = metadata.common;
+        const title = common.title?.trim() || path.basename(file, path.extname(file));
+        const artist = common.artist?.trim() || "Unknown Artist";
+        const album = common.album?.trim() || "Unknown Album";
+        const albumArtist = common.albumartist?.trim() || (common.compilation ? "Various Artists" : artist);
+        const albumId = createHash("sha1").update(`${albumArtist.toLocaleLowerCase()}\0${album.toLocaleLowerCase()}`).digest("hex");
+        let artwork: { path: string; source: "embedded" | "folder" } | null = null;
+        if (!artworkFound.has(albumId) && !this.getArtworkPath(albumId)) {
+          artwork = await this.cacheArtwork(albumId, file, common.picture?.[0]);
+          if (artwork) artworkFound.add(albumId);
+        }
+        upsertAlbum.run(albumId, album, albumArtist, common.year ?? null, artwork?.path ?? null, artwork?.source ?? null, artwork ? Date.now() : 0);
+        upsertTrack.run(file, root, albumId, title, artist, album, albumArtist, common.track.no ?? 0, common.disk.no ?? 0, metadata.format.duration ?? 0, common.year ?? null, fileStat.mtimeMs, scanToken);
+      } catch (error) {
+        if (existingFile.get(file)) markUnchanged.run(scanToken, root, file);
+        console.warn(`Could not read metadata for ${file}`, error);
+      }
+    }
+    onProgress({ phase: "finishing", current: files.length, total: files.length });
+    this.db.prepare("DELETE FROM tracks WHERE source_root = ? AND scan_token != ?").run(root, scanToken);
+    this.db.prepare("DELETE FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks)").run();
+    this.db.prepare("INSERT INTO settings (key, value) VALUES ('library_root', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(root);
+  }
+
+  async fetchAlbumArtwork(albumId: string): Promise<ArtworkResult> {
+    const row = this.db.prepare("SELECT title, artist FROM albums WHERE id = ?").get(albumId) as Row | undefined;
+    if (!row) return { success: false, message: "Album not found", albumId };
+    const title = String(row.title);
+    const artist = String(row.artist);
+    try {
+      const searchUrl = new URL("https://musicbrainz.org/ws/2/release-group/");
+      searchUrl.searchParams.set("query", `releasegroup:\"${escapeLucene(title)}\" AND artist:\"${escapeLucene(artist)}\"`);
+      searchUrl.searchParams.set("fmt", "json");
+      searchUrl.searchParams.set("limit", "5");
+      const searchResponse = await fetch(searchUrl, { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT, Accept: "application/json" } });
+      if (!searchResponse.ok) throw new Error(`MusicBrainz returned ${searchResponse.status}`);
+      const data = await searchResponse.json() as { "release-groups"?: Array<{ id: string; title: string; score?: number; "artist-credit"?: Array<{ name: string }> }> };
+      const candidates = data["release-groups"] ?? [];
+      const exact = candidates.find((candidate) => {
+        const candidateArtist = candidate["artist-credit"]?.map((credit) => credit.name).join(" ") ?? "";
+        return normalise(candidate.title) === normalise(title) && normalise(candidateArtist).includes(normalise(artist));
+      });
+      const match = exact ?? candidates.find((candidate) => Number(candidate.score ?? 0) >= 85);
+      if (!match) return { success: false, message: `No confident artwork match for ${title}`, albumId };
+      const coverResponse = await fetch(`https://coverartarchive.org/release-group/${match.id}/front-500`, { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT, Accept: "image/*" }, redirect: "follow" });
+      if (!coverResponse.ok) return { success: false, message: `No front cover is available for ${title}`, albumId };
+      const contentType = coverResponse.headers.get("content-type") ?? "image/jpeg";
+      const extension = contentType.includes("png") ? ".png" : contentType.includes("webp") ? ".webp" : ".jpg";
+      const destination = path.join(this.artworkDirectory, `${albumId}-online${extension}`);
+      await writeFile(destination, new Uint8Array(await coverResponse.arrayBuffer()));
+      this.db.prepare("UPDATE albums SET artwork_path = ?, artwork_source = 'musicbrainz', artwork_updated_at = ?, musicbrainz_id = ? WHERE id = ?").run(destination, Date.now(), match.id, albumId);
+      return { success: true, message: `Artwork found for ${title}`, albumId };
+    } catch (error) {
+      return { success: false, message: error instanceof Error ? error.message : "Artwork lookup failed", albumId };
+    }
+  }
+
+  async fetchMissingArtwork(onProgress: (progress: ArtworkProgress) => void): Promise<{ found: number; missing: number }> {
+    const rows = this.db.prepare("SELECT id, title FROM albums WHERE artwork_path IS NULL ORDER BY artist, title").all() as Row[];
+    let found = 0;
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      onProgress({ current: index + 1, total: rows.length, album: String(row.title), status: "searching" });
+      const result = await this.fetchAlbumArtwork(String(row.id));
+      if (result.success) found += 1;
+      onProgress({ current: index + 1, total: rows.length, album: String(row.title), status: result.success ? "found" : "missing" });
+      if (index < rows.length - 1) await delay(1100);
+    }
+    return { found, missing: rows.length - found };
+  }
+
+  private async findAudioFiles(root: string): Promise<string[]> {
+    const results: string[] = [];
+    const failures: string[] = [];
+    const visit = async (directory: string): Promise<void> => {
+      let entries;
+      try { entries = await readdir(directory, { withFileTypes: true }); } catch { failures.push(directory); return; }
+      for (const entry of entries) {
+        const fullPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) await visit(fullPath);
+        else if (entry.isFile() && AUDIO_EXTENSIONS.has(path.extname(entry.name).toLocaleLowerCase())) results.push(fullPath);
+      }
+    };
+    await visit(root);
+    if (failures.length > 0) throw new Error(`Could not read ${failures.length} folder${failures.length === 1 ? "" : "s"} on the share. The catalogue was left unchanged.`);
+    return results;
+  }
+
+  private async cacheArtwork(albumId: string, audioFile: string, embedded?: { data: Uint8Array; format: string }): Promise<{ path: string; source: "embedded" | "folder" } | null> {
+    const extensionFor = (format: string) => format.includes("png") ? ".png" : format.includes("webp") ? ".webp" : ".jpg";
+    if (embedded) {
+      const destination = path.join(this.artworkDirectory, `${albumId}${extensionFor(embedded.format)}`);
+      await writeFile(destination, embedded.data);
+      return { path: destination, source: "embedded" };
+    }
+    const directory = path.dirname(audioFile);
+    let names: string[] = [];
+    try { names = await readdir(directory); } catch { return null; }
+    const lookup = new Map(names.map((name) => [name.toLocaleLowerCase(), name]));
+    for (const candidate of COVER_NAMES) {
+      const actualName = lookup.get(candidate);
+      if (!actualName) continue;
+      const extension = path.extname(actualName).toLocaleLowerCase();
+      const destination = path.join(this.artworkDirectory, `${albumId}${extension}`);
+      await copyFile(path.join(directory, actualName), destination);
+      return { path: destination, source: "folder" };
+    }
+    return null;
+  }
+}
