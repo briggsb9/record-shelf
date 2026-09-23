@@ -30,7 +30,7 @@ This is an unsigned-for-production debug APK intended for sideloaded testing, no
 
 ### Local Android development
 
-Install Android Studio with SDK 36 and JDK 17, then run:
+Install Android Studio with SDK 36 and JDK 21, then run:
 
 ```bash
 npm ci
