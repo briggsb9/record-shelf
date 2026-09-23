@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Album, ArtworkProgress, Library, ScanProgress, Track } from "./types";
+import { isNativeAndroid, recordShelf, trackPlaybackUrl } from "./platform";
 
 type View = "albums" | "artists" | "songs" | "playlist" | "queue";
 type AlbumLayout = "shelf" | "detail" | "covers" | "list";
@@ -78,8 +79,10 @@ export default function App() {
     if (newQueue) setQueue(newQueue);
     setCurrentTrack(track);
     setElapsed(0);
-    audio.src = `music-file://track/${track.id}`;
-    void audio.play().catch(() => setNotice({ kind: "error", message: "This track could not be played. Check that the NAS is connected and the format is supported." }));
+    void trackPlaybackUrl(track).then((url) => {
+      audio.src = url;
+      return audio.play();
+    }).catch(() => setNotice({ kind: "error", message: "This track could not be played. Check that the music location is available and the format is supported." }));
   }, []);
 
   const togglePlayback = useCallback(() => {
@@ -113,7 +116,7 @@ export default function App() {
     setNotice(null);
     setScanProgress({ phase: "discovering", current: 0, total: 0 });
     try {
-      const snapshot = await window.recordShelf.scanFolder(root);
+      const snapshot = await recordShelf.scanFolder(root);
       setLibrary(snapshot);
       setSelectedAlbumId((current) => snapshot.albums.some((album) => album.id === current) ? current : snapshot.albums[0]?.id ?? null);
       setNotice({ kind: "success", message: `Library ready · ${snapshot.albums.length} albums · ${snapshot.albums.flatMap((album) => album.tracks).length} songs` });
@@ -123,16 +126,16 @@ export default function App() {
   }, []);
 
   const chooseAndScan = useCallback(async () => {
-    const root = await window.recordShelf.chooseFolder();
+    const root = await recordShelf.chooseFolder();
     if (root) await runScan(root);
   }, [runScan]);
   const rescan = useCallback(async () => library.root ? runScan(library.root) : chooseAndScan(), [chooseAndScan, library.root, runScan]);
 
   useEffect(() => {
-    void window.recordShelf.getLibrary().then((snapshot) => { setLibrary(snapshot); setSelectedAlbumId(snapshot.albums[0]?.id ?? null); });
-    const removeProgress = window.recordShelf.onScanProgress(setScanProgress);
-    const removeArtworkProgress = window.recordShelf.onArtworkProgress(setArtworkProgress);
-    const removeChoose = window.recordShelf.onChooseLibrary(() => void chooseAndScan());
+    void recordShelf.getLibrary().then((snapshot) => { setLibrary(snapshot); setSelectedAlbumId(snapshot.albums[0]?.id ?? null); });
+    const removeProgress = recordShelf.onScanProgress(setScanProgress);
+    const removeArtworkProgress = recordShelf.onArtworkProgress(setArtworkProgress);
+    const removeChoose = recordShelf.onChooseLibrary(() => void chooseAndScan());
     return () => { removeProgress(); removeArtworkProgress(); removeChoose(); };
   }, [chooseAndScan]);
 
@@ -150,7 +153,7 @@ export default function App() {
     };
   }, [nextTrack]);
   useEffect(() => { audioRef.current.volume = volume; }, [volume]);
-  useEffect(() => window.recordShelf.onPlayerCommand((command) => {
+  useEffect(() => recordShelf.onPlayerCommand((command) => {
     if (command === "toggle") togglePlayback();
     if (command === "next") nextTrack();
     if (command === "previous") previousTrack();
@@ -213,14 +216,14 @@ export default function App() {
 
   const fetchArtwork = async (album: Album) => {
     setArtworkBusy(album.id); setNotice({ kind: "info", message: `Searching MusicBrainz for “${album.title}”…` });
-    const response = await window.recordShelf.fetchAlbumArtwork(album.id);
+    const response = await recordShelf.fetchAlbumArtwork(album.id);
     setLibrary(response.library); setArtworkBusy(null);
     setNotice({ kind: response.result.success ? "success" : "error", message: response.result.message });
   };
   const fetchAllMissingArtwork = async () => {
     setArtworkBusy("all"); setArtworkProgress(null); setNotice({ kind: "info", message: "Searching MusicBrainz and the Cover Art Archive for missing covers…" });
     try {
-      const response = await window.recordShelf.fetchMissingArtwork();
+      const response = await recordShelf.fetchMissingArtwork();
       setLibrary(response.library);
       setNotice({ kind: "success", message: `Artwork search complete · ${response.result.found} found · ${response.result.missing} unmatched` });
     } catch { setNotice({ kind: "error", message: "The artwork service could not be reached. Try again later." }); }
@@ -230,22 +233,22 @@ export default function App() {
   const openPlaylistDialog = (track: Track | null = null) => { setNewPlaylistName(""); setPlaylistDialog({ track }); };
   const createPlaylist = async () => {
     if (!newPlaylistName.trim()) return;
-    const playlist = await window.recordShelf.createPlaylist(newPlaylistName);
-    if (playlistDialog?.track) setLibrary(await window.recordShelf.addToPlaylist(playlist.id, playlistDialog.track.id));
+    const playlist = await recordShelf.createPlaylist(newPlaylistName);
+    if (playlistDialog?.track) setLibrary(await recordShelf.addToPlaylist(playlist.id, playlistDialog.track.id));
     else setLibrary((current) => ({ ...current, playlists: [...current.playlists, playlist] }));
     setPlaylistDialog(null);
   };
   const choosePlaylist = async (playlistId: string) => {
     if (!playlistDialog?.track) return;
-    setLibrary(await window.recordShelf.addToPlaylist(playlistId, playlistDialog.track.id)); setPlaylistDialog(null);
+    setLibrary(await recordShelf.addToPlaylist(playlistId, playlistDialog.track.id)); setPlaylistDialog(null);
   };
   const removeFromPlaylist = async (trackId: number) => {
-    if (activePlaylist) setLibrary(await window.recordShelf.removeFromPlaylist(activePlaylist.id, trackId));
+    if (activePlaylist) setLibrary(await recordShelf.removeFromPlaylist(activePlaylist.id, trackId));
   };
   const deletePlaylist = async () => {
     if (!playlistToDelete) return;
     try {
-      const snapshot = await window.recordShelf.deletePlaylist(playlistToDelete.id);
+      const snapshot = await recordShelf.deletePlaylist(playlistToDelete.id);
       setLibrary(snapshot);
       setSelectedPlaylistId(null);
       setView("albums");
@@ -335,7 +338,7 @@ export default function App() {
         <button className={view === "queue" ? "active" : ""} onClick={() => { setSelectedPlaylistId(null); setView("queue"); }}><span>☷</span>Up Next<small className="queue-count">{queue.length}</small></button>
         {library.playlists.map((playlist) => <button key={playlist.id} className={selectedPlaylistId === playlist.id ? "active" : ""} onClick={() => { setSelectedPlaylistId(playlist.id); setView("playlist"); }}><span>♫</span>{playlist.name}</button>)}
       </nav>
-      <div className="source-status"><span className={library.root ? "status-dot online" : "status-dot"} /><div><b>{library.root ? "Library connected" : "No library"}</b><small>{library.root?.split(/[\\/]/).pop() ?? "Choose a NAS folder"}</small></div></div>
+      <div className="source-status"><span className={library.root ? "status-dot online" : "status-dot"} /><div><b>{library.root ? "Library connected" : "No library"}</b><small>{library.root ? (isNativeAndroid ? "Android music folder" : library.root.split(/[\\/]/).pop()) : isNativeAndroid ? "Choose a music location" : "Choose a NAS folder"}</small></div></div>
     </aside>
 
     <main ref={mainRef} className={view === "albums" && albumLayout === "shelf" ? "shelf-mode" : ""} onScroll={(event) => { screenPositionsRef.current[screenKey] = event.currentTarget.scrollTop; }}>
@@ -344,11 +347,11 @@ export default function App() {
       {artworkProgress && <div className="scan-strip artwork-strip"><div style={{ width: artworkProgress.total ? `${artworkProgress.current / artworkProgress.total * 100}%` : "5%" }} /><span>{artworkProgress.status === "searching" ? "Searching" : artworkProgress.status === "found" ? "Found artwork for" : "No match for"} {artworkProgress.album} · {artworkProgress.current}/{artworkProgress.total}</span></div>}
       {notice && <button className={`notice ${notice.kind}`} onClick={() => setNotice(null)}>{notice.message}<span>×</span></button>}
 
-      {library.albums.length === 0 && !scanProgress ? <section className="empty-state"><div className="empty-record"><span>♪</span></div><p className="eyebrow">WELCOME TO YOUR COLLECTION</p><h1>Music should feel tangible.</h1><p>Choose the music folder mounted from your NAS. Record Shelf builds a fast local catalogue while your original files stay exactly where they are.</p><button onClick={() => void chooseAndScan()}>Choose Music Folder</button><small>Works with SMB shares mounted in Finder</small></section> : <>
+      {library.albums.length === 0 && !scanProgress ? <section className="empty-state"><div className="empty-record"><span>♪</span></div><p className="eyebrow">WELCOME TO YOUR COLLECTION</p><h1>Music should feel tangible.</h1><p>{isNativeAndroid ? "Choose a music folder from Android's Files screen. Local folders and NAS shares exposed by a compatible file provider can be indexed without copying your music." : "Choose the music folder mounted from your NAS. Record Shelf builds a fast local catalogue while your original files stay exactly where they are."}</p><button onClick={() => void chooseAndScan()}>Choose Music Folder</button><small>{isNativeAndroid ? "Folder access is retained across restarts" : "Works with SMB shares mounted in Finder"}</small></section> : <>
         {view === "albums" && <section className={`collection-view layout-${albumLayout}`}><div className="section-title"><div><p className="eyebrow">{selectedArtist ? "ARTIST" : "THE RECORD SHELF"}</p><h1>{selectedArtist ?? "Albums"}</h1></div><div className="section-tools"><span>{filteredAlbums.length} albums · {filteredAlbums.flatMap((album) => album.tracks).length} songs</span>{selectedArtist && <button className="clear-filter-button" onClick={() => setSelectedArtist(null)}>All Albums</button>}<LayoutSwitcher value={albumLayout} onChange={setAlbumLayout} /></div></div>{albumView}</section>}
         {view === "artists" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">BROWSE</p><h1>Artists</h1></div></div><div className="artist-grid">{Array.from(new Set(library.albums.map((album) => album.artist))).filter((artist) => artist.toLowerCase().includes(query.toLowerCase())).sort().map((artist) => <button key={artist} onClick={() => showArtist(artist)}><div className="artist-avatar">{artist.slice(0, 2).toUpperCase()}</div><b>{artist}</b><span>{library.albums.filter((album) => album.artist === artist).length} albums</span></button>)}</div></section>}
         {(view === "songs" || view === "playlist") && <section className="list-view"><div className="section-title"><div><p className="eyebrow">{view === "playlist" ? "PLAYLIST" : "LIBRARY"}</p><h1>{view === "playlist" ? activePlaylist?.name : "Songs"}</h1></div><div className="playlist-title-actions"><span>{view === "playlist" ? playlistTracks.length : allTracks.length} songs</span>{view === "playlist" && activePlaylist && <button className="delete-playlist-button" onClick={() => setPlaylistToDelete({ id: activePlaylist.id, name: activePlaylist.name })}>Delete Playlist</button>}</div></div>{trackRows((view === "playlist" ? playlistTracks : allTracks).filter((track) => `${track.title} ${track.artist} ${track.album}`.toLowerCase().includes(query.toLowerCase())), view === "playlist")}</section>}
-        {view === "queue" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">RUNNING ORDER</p><h1>Up Next</h1></div><span>{queue.length} {queue.length === 1 ? "track" : "tracks"}</span></div>{queue.length ? trackRows(queue) : <div className="queue-empty"><span>☷</span><h2>Your queue is empty</h2><p>Right-click any track and choose Play Next or Add to Queue.</p></div>}</section>}
+        {view === "queue" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">RUNNING ORDER</p><h1>Up Next</h1></div><span>{queue.length} {queue.length === 1 ? "track" : "tracks"}</span></div>{queue.length ? trackRows(queue) : <div className="queue-empty"><span>☷</span><h2>Your queue is empty</h2><p>Use the ••• action button on any track, then choose Play Next or Add to Queue.</p></div>}</section>}
       </>}
     </main>
 
