@@ -2,6 +2,8 @@
 
 Record Shelf is an album-first desktop music player for libraries stored on a NAS. It reads a normal mounted file share, builds a fast local SQLite catalogue, caches cover artwork locally, and plays the original files directly from the share.
 
+![Record Shelf showing the album shelf, selected album and track list](docs/assets/record-shelf-main.png)
+
 ## macOS development
 
 1. Mount the NAS share in Finder (`Go` → `Connect to Server…`, usually `smb://your-nas/music`).
