@@ -492,7 +492,7 @@ export default function App() {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="traffic-space" />
-      <div className="brand"><span className="brand-mark">RS</span><div><b>Record Shelf</b><small>Your collection</small></div></div>
+      <div className="brand"><span className="brand-mark">RS</span><div className="brand-copy"><span className="brand-title-row"><b>Record Shelf</b><span className="app-version brand-version" aria-label={`Record Shelf version ${__APP_VERSION__}`}>v{__APP_VERSION__}</span></span><small>Your collection</small></div></div>
       <nav><p>LIBRARY</p>
         <button className={view === "albums" ? "active" : ""} onClick={() => { setSelectedArtist(null); setView("albums"); }}><span>▦</span> Albums</button>
         <button className={view === "artists" ? "active" : ""} onClick={() => setView("artists")}><span>♬</span> Artists</button>
@@ -506,7 +506,7 @@ export default function App() {
     </aside>
 
     <main ref={mainRef} className={view === "albums" && albumLayout === "shelf" ? "shelf-mode" : ""} onScroll={(event) => { screenPositionsRef.current[screenKey] = event.currentTarget.scrollTop; }}>
-      <header className="topbar"><label className="search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search albums, artists and songs" /><kbd>⌘ L</kbd></label><div className="top-actions"><span className="app-version" aria-label={`Record Shelf version ${__APP_VERSION__}`}>v{__APP_VERSION__}</span><button className="art-button" onClick={() => void fetchAllMissingArtwork()} disabled={!library.albums.length || artworkBusy !== null}>◇ Find Artwork</button><button className="scan-button" onClick={() => void rescan()} disabled={!!scanProgress}>{scanProgress ? "Scanning…" : library.root ? "Rescan" : "Choose Music Folder"}</button></div></header>
+      <header className="topbar"><label className="search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search albums, artists and songs" /><kbd>⌘ L</kbd></label><div className="top-actions"><span className="app-version mobile-version" aria-label={`Record Shelf version ${__APP_VERSION__}`}>v{__APP_VERSION__}</span><button className="art-button" onClick={() => void fetchAllMissingArtwork()} disabled={!library.albums.length || artworkBusy !== null}>◇ Find Artwork</button><button className="scan-button" onClick={() => void rescan()} disabled={!!scanProgress}>{scanProgress ? "Scanning…" : library.root ? "Rescan" : "Choose Music Folder"}</button></div></header>
       {scanProgress && <div className="scan-strip"><div style={{ width: scanProgress.total ? `${scanProgress.current / scanProgress.total * 100}%` : "12%" }} /><span>{scanProgress.phase === "discovering" ? "Finding music on your NAS…" : `Reading ${scanProgress.current} of ${scanProgress.total}${scanProgress.file ? ` · ${scanProgress.file}` : ""}`}</span></div>}
       {artworkProgress && <div className="scan-strip artwork-strip"><div style={{ width: artworkProgress.total ? `${artworkProgress.current / artworkProgress.total * 100}%` : "5%" }} /><span>{artworkProgress.status === "searching" ? "Searching" : artworkProgress.status === "found" ? "Found artwork for" : "No match for"} {artworkProgress.album} · {artworkProgress.current}/{artworkProgress.total}</span></div>}
       {notice && <button className={`notice ${notice.kind}`} onClick={() => setNotice(null)}>{notice.message}<span>×</span></button>}

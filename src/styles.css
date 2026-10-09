@@ -6,7 +6,7 @@ button, input { font: inherit; } button { color: inherit; }
 .sidebar { grid-row: 1; background: #12120f; border-right: 1px solid #2c2c25; display: flex; flex-direction: column; padding: 0 14px 14px; -webkit-app-region: drag; }
 .traffic-space { height: 47px; }.brand { display: flex; align-items: center; gap: 10px; padding: 9px 8px 24px; }
 .brand-mark { width: 36px; height: 36px; border-radius: 9px; background: #d6a348; display: grid; place-items: center; color: #17130b; font: 700 12px Georgia, serif; }
-.brand div, .now-playing div { display: flex; flex-direction: column; min-width: 0; }.brand b { font-family: Georgia, serif; letter-spacing: .02em; }
+.brand div, .now-playing div { display: flex; flex-direction: column; min-width: 0; }.brand-copy { flex: 1; }.brand .brand-title-row { display: flex; align-items: center; gap: 6px; min-width: 0; }.brand b { min-width: 0; font-family: Georgia, serif; letter-spacing: .02em; white-space: nowrap; }
 .brand small, .source-status small { color: #77776c; font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar nav { -webkit-app-region: no-drag; overflow-y: auto; }.sidebar nav p { color: #66665d; font-size: 10px; font-weight: 700; letter-spacing: .16em; padding: 0 10px; margin: 10px 0 6px; }
 .sidebar nav button { appearance: none; border: 0; background: none; width: 100%; display: flex; gap: 11px; align-items: center; padding: 9px 10px; border-radius: 7px; color: #aaa99e; text-align: left; font-size: 13px; cursor: pointer; }
@@ -31,7 +31,7 @@ main.shelf-mode .track-scroll-region::-webkit-scrollbar-thumb { background: #5a4
 .topbar button, .topbar input { -webkit-app-region: no-drag; }
 .search { display: grid; grid-template-columns: 24px 1fr auto; align-items: center; gap: 5px; height: 38px; border: 1px solid #3a3931; background: #20201b; border-radius: 9px; padding: 0 9px; color: #79786f; }
 .search input { border: 0; outline: 0; color: #e4e0d6; background: transparent; font-size: 12px; }.search kbd { font-size: 9px; background: #303029; border: 1px solid #44433a; border-radius: 4px; padding: 3px 5px; }
-.top-actions { justify-self: end; display: flex; align-items: center; gap: 8px; }.app-version { border: 1px solid #3d3b33; border-radius: 999px; background: #20201b; color: #807e74; padding: 4px 7px; font-size: 8px; font-weight: 700; letter-spacing: .04em; white-space: nowrap; }.top-actions button { border-radius: 8px; padding: 8px 12px; font-size: 10px; cursor: pointer; }
+.top-actions { justify-self: end; display: flex; align-items: center; gap: 8px; }.app-version { border: 1px solid #3d3b33; border-radius: 999px; background: #20201b; color: #807e74; padding: 4px 7px; font-size: 8px; font-weight: 700; letter-spacing: .04em; white-space: nowrap; }.brand-version { flex: 0 0 auto; border: 0; background: transparent; padding: 1px 0 0; color: #8b887e; font-size: 7px; }.mobile-version { display: none; }.top-actions button { border-radius: 8px; padding: 8px 12px; font-size: 10px; cursor: pointer; }
 .scan-button { border: 1px solid #53462e; background: #342d20; color: #deb969; }.art-button { border: 1px solid #424139; background: #26251f; color: #c7c3b8; }.top-actions button:disabled { opacity: .45; cursor: default; }
 .scan-strip { position: sticky; top: 72px; z-index: 9; height: 27px; background: #221f17; color: #cab075; overflow: hidden; font-size: 10px; display: grid; place-items: center; }.scan-strip div { position: absolute; left: 0; inset-block: 0; background: #514226; transition: width .2s; }.scan-strip span { z-index: 1; }.artwork-strip { background: #17201b; color: #9fc2a5; }.artwork-strip div { background: #2c4933; }
 .notice { position: fixed; z-index: 30; top: 82px; right: 22px; max-width: 520px; border: 1px solid #49473d; border-radius: 8px; padding: 10px 12px; box-shadow: 0 12px 35px #000a; background: #292820; font-size: 11px; text-align: left; cursor: pointer; }.notice span { margin-left: 14px; color: #858378; }.notice.success { border-color: #36563a; }.notice.error { border-color: #6e3d35; color: #efb0a4; }.notice.info { border-color: #5a4b2f; color: #e0bd77; }
@@ -96,6 +96,7 @@ main:not(.shelf-mode) > .collection-view > .section-title, main:not(.shelf-mode)
   .search { min-width: 0; height: 40px; grid-template-columns: 20px minmax(0, 1fr); }
   .search kbd, .art-button { display: none; }
   .top-actions { min-width: 0; }
+  .mobile-version { display: inline-flex; }
   .top-actions button { min-height: 40px; max-width: 112px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-inline: 10px; }
   .scan-strip { top: 64px; }
   .notice { top: calc(70px + env(safe-area-inset-top)); inset-inline: 12px; max-width: none; }
