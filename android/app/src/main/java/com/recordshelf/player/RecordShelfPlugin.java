@@ -249,6 +249,44 @@ public class RecordShelfPlugin extends Plugin {
         }
     }
 
+    @PluginMethod
+    public void fetchArtistArtwork(PluginCall call) {
+        try {
+            JSONObject library = loadLibrary();
+            JSObject result = new JSObject();
+            result.put("success", false);
+            result.put("message", "Android currently uses album artwork as the artist image fallback.");
+            result.put("albumId", call.getString("artist", ""));
+            JSObject response = new JSObject();
+            response.put("result", result);
+            response.put("library", library);
+            call.resolve(response);
+        } catch (Exception error) {
+            call.reject("Artist artwork status could not be read.", error);
+        }
+    }
+
+    @PluginMethod
+    public void fetchMissingArtistArtwork(PluginCall call) {
+        try {
+            JSONObject library = loadLibrary();
+            Set<String> names = new HashSet<>();
+            JSONArray albums = library.optJSONArray("albums");
+            if (albums != null) {
+                for (int index = 0; index < albums.length(); index++) names.add(albums.getJSONObject(index).optString("artist"));
+            }
+            JSObject result = new JSObject();
+            result.put("found", 0);
+            result.put("missing", names.size());
+            JSObject response = new JSObject();
+            response.put("result", result);
+            response.put("library", library);
+            call.resolve(response);
+        } catch (Exception error) {
+            call.reject("Artist artwork status could not be read.", error);
+        }
+    }
+
     private JSONObject buildLibrary(String root, List<AudioDocument> documents, JSONArray savedPlaylists) throws Exception {
         Map<String, JSONObject> albums = new HashMap<>();
         Map<String, List<JSONObject>> tracksByAlbum = new HashMap<>();

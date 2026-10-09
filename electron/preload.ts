@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld("recordShelf", {
   removeFromPlaylist: (playlistId: string, trackId: number) => ipcRenderer.invoke("playlist:remove-track", playlistId, trackId),
   fetchAlbumArtwork: (albumId: string) => ipcRenderer.invoke("artwork:fetch-album", albumId),
   fetchMissingArtwork: () => ipcRenderer.invoke("artwork:fetch-missing"),
+  fetchArtistArtwork: (artist: string) => ipcRenderer.invoke("artwork:fetch-artist", artist),
+  fetchMissingArtistArtwork: () => ipcRenderer.invoke("artwork:fetch-missing-artists"),
   onScanProgress: (callback: (progress: ScanProgress) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, progress: ScanProgress) => callback(progress);
     ipcRenderer.on("library:scan-progress", listener);

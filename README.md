@@ -48,6 +48,8 @@ To build a debug APK directly, run `npm run android:apk`. The output is `android
 
 Record Shelf uses embedded artwork first, then common folder images such as `cover.jpg` and `folder.jpg`. Use **Find Artwork** to retrieve missing covers from MusicBrainz and the Cover Art Archive. Individual albums can also be refreshed. Online artwork requests send the album and artist names to MusicBrainz and are limited to one search per second.
 
+The Artists view displays cached artist portraits when available and falls back to a representative album cover. **Find Artist Photos** matches artists through MusicBrainz, retrieves freely reusable images from Wikipedia or Wikimedia Commons, and keeps the downloaded portraits in Record Shelf's local artwork cache across restarts. Android currently uses the album-cover fallback for artist cards.
+
 ## Build installers
 
 - macOS: `npm run package:mac`

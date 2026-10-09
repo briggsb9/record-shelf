@@ -1,6 +1,6 @@
 {
   "name": "record-shelf",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "A fast, album-first music player for desktop, Android and NAS libraries.",
@@ -21,7 +21,7 @@
   "dependencies": {
     "@capacitor/android": "^8.5.2",
     "@capacitor/core": "^8.5.2",
-    "music-metadata": "^11.8.3",
+    "music-metadata": "^11.16.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },

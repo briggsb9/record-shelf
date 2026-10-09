@@ -12,6 +12,8 @@ type NativeRecordShelfPlugin = {
   removeFromPlaylist(options: { playlistId: string; trackId: number }): Promise<NativeEnvelope<Library>>;
   fetchAlbumArtwork(options: { albumId: string }): Promise<{ result: ArtworkResult; library: Library }>;
   fetchMissingArtwork(): Promise<{ result: { found: number; missing: number }; library: Library }>;
+  fetchArtistArtwork(options: { artist: string }): Promise<{ result: ArtworkResult; library: Library }>;
+  fetchMissingArtistArtwork(): Promise<{ result: { found: number; missing: number }; library: Library }>;
   getTrackUrl(options: { trackId: number }): Promise<{ url: string }>;
   addListener(eventName: "scanProgress", listener: (progress: ScanProgress) => void): Promise<PluginListenerHandle>;
 };
@@ -20,13 +22,15 @@ const NativeRecordShelf = registerPlugin<NativeRecordShelfPlugin>("RecordShelf")
 export const isNativeAndroid = Capacitor.getPlatform() === "android";
 
 function normaliseLibrary(library: Library): Library {
-  if (!isNativeAndroid) return library;
+  const artists = Array.isArray(library.artists) ? library.artists : [];
+  if (!isNativeAndroid) return { ...library, artists };
   return {
     ...library,
     albums: library.albums.map((album) => ({
       ...album,
       artworkUrl: album.artworkUrl ? Capacitor.convertFileSrc(album.artworkUrl) : null,
     })),
+    artists: artists.map((artist) => ({ ...artist, imageUrl: artist.imageUrl ? Capacitor.convertFileSrc(artist.imageUrl) : null })),
   };
 }
 
@@ -51,6 +55,14 @@ const mobileBridge: Window["recordShelf"] = {
   },
   fetchMissingArtwork: async () => {
     const response = await NativeRecordShelf.fetchMissingArtwork();
+    return { ...response, library: normaliseLibrary(response.library) };
+  },
+  fetchArtistArtwork: async (artist) => {
+    const response = await NativeRecordShelf.fetchArtistArtwork({ artist });
+    return { ...response, library: normaliseLibrary(response.library) };
+  },
+  fetchMissingArtistArtwork: async () => {
+    const response = await NativeRecordShelf.fetchMissingArtistArtwork();
     return { ...response, library: normaliseLibrary(response.library) };
   },
   onScanProgress: (callback) => nativeListener("scanProgress", callback),

@@ -89,8 +89,8 @@ app.whenReady().then(async () => {
   });
   protocol.handle("music-art", (request) => {
     const url = new URL(request.url);
-    const albumId = decodeURIComponent(url.pathname.slice(1));
-    const filePath = library.getArtworkPath(albumId);
+    const resourceId = decodeURIComponent(url.pathname.slice(1));
+    const filePath = url.hostname === "artist" ? library.getArtistImagePath(resourceId) : library.getArtworkPath(resourceId);
     return filePath ? net.fetch(pathToFileURL(filePath).href) : new Response("Artwork not found", { status: 404 });
   });
 
@@ -123,6 +123,14 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("artwork:fetch-missing", async () => {
     const result = await library.fetchMissingArtwork((progress: ArtworkProgress) => mainWindow?.webContents.send("artwork:progress", progress));
+    return { result, library: library.snapshot() };
+  });
+  ipcMain.handle("artwork:fetch-artist", async (_event, artist: string) => {
+    const result = await library.fetchArtistArtwork(artist);
+    return { result, library: library.snapshot() };
+  });
+  ipcMain.handle("artwork:fetch-missing-artists", async () => {
+    const result = await library.fetchMissingArtistArtwork((progress: ArtworkProgress) => mainWindow?.webContents.send("artwork:progress", progress));
     return { result, library: library.snapshot() };
   });
 

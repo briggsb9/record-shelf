@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Album, ArtworkProgress, Library, ScanProgress, Track } from "./types";
+import type { Album, Artist, ArtworkProgress, Library, ScanProgress, Track } from "./types";
 import { isNativeAndroid, recordShelf, trackPlaybackUrl } from "./platform";
 
 type View = "albums" | "artists" | "songs" | "playlist" | "queue";
@@ -20,6 +20,15 @@ function Artwork({ album, className = "" }: { album?: Album; className?: string 
     : <div className={`artwork placeholder ${className}`}><span>♪</span><small>{album?.title ?? "Record Shelf"}</small></div>;
 }
 
+function ArtistArtwork({ artist, fallbackAlbum }: { artist: Artist; fallbackAlbum?: Album }) {
+  const [failed, setFailed] = useState(false);
+  const imageUrl = artist.imageUrl ?? fallbackAlbum?.artworkUrl ?? null;
+  useEffect(() => setFailed(false), [imageUrl]);
+  return imageUrl && !failed
+    ? <img className="artist-avatar" src={imageUrl} alt={artist.imageUrl ? `${artist.name} portrait` : `${artist.name} representative album cover`} onError={() => setFailed(true)} />
+    : <div className="artist-avatar"><span>{artist.name.slice(0, 2).toUpperCase()}</span></div>;
+}
+
 function LayoutSwitcher({ value, onChange }: { value: AlbumLayout; onChange: (layout: AlbumLayout) => void }) {
   const options: Array<{ id: AlbumLayout; icon: string; label: string }> = [
     { id: "shelf", icon: "▱", label: "Shelf" }, { id: "detail", icon: "◫", label: "Album" },
@@ -31,8 +40,9 @@ function LayoutSwitcher({ value, onChange }: { value: AlbumLayout; onChange: (la
 }
 
 export default function App() {
-  const [library, setLibrary] = useState<Library>({ root: null, albums: [], playlists: [] });
+  const [library, setLibrary] = useState<Library>({ root: null, albums: [], artists: [], playlists: [] });
   const [selectedAlbumId, setSelectedAlbumId] = useState<string | null>(null);
+  const [expandedAlbumId, setExpandedAlbumId] = useState<string | null>(null);
   const [view, setView] = useState<View>("albums");
   const [albumLayout, setAlbumLayoutState] = useState<AlbumLayout>(() => (localStorage.getItem("album-layout") as AlbumLayout) || "shelf");
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
@@ -41,6 +51,7 @@ export default function App() {
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [artworkProgress, setArtworkProgress] = useState<ArtworkProgress | null>(null);
   const [artworkBusy, setArtworkBusy] = useState<string | null>(null);
+  const [artistArtworkBusy, setArtistArtworkBusy] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [queue, setQueue] = useState<Track[]>([]);
@@ -55,16 +66,21 @@ export default function App() {
   const searchRef = useRef<HTMLInputElement>(null);
   const mainRef = useRef<HTMLElement>(null);
   const shelfRef = useRef<HTMLDivElement>(null);
+  const trackScrollRef = useRef<HTMLDivElement>(null);
+  const playbackRequestRef = useRef(0);
+  const loadedTrackIdRef = useRef<number | null>(null);
+  const shouldPlayRef = useRef(false);
   const screenPositionsRef = useRef<Record<string, number>>({});
   const shelfPositionsRef = useRef<Record<string, number>>({});
 
   const allTracks = useMemo(() => library.albums.flatMap((album) => album.tracks), [library.albums]);
   const currentAlbum = useMemo(() => library.albums.find((album) => album.id === currentTrack?.albumId), [library.albums, currentTrack]);
-  const selectedAlbum = useMemo(() => library.albums.find((album) => album.id === selectedAlbumId) ?? library.albums[0], [library.albums, selectedAlbumId]);
   const filteredAlbums = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     return library.albums.filter((album) => (!selectedArtist || album.artist === selectedArtist) && (!needle || `${album.title} ${album.artist} ${album.year ?? ""} ${album.tracks.map((track) => track.title).join(" ")}`.toLocaleLowerCase().includes(needle)));
   }, [library.albums, query, selectedArtist]);
+  const selectedAlbum = useMemo(() => filteredAlbums.find((album) => album.id === selectedAlbumId) ?? filteredAlbums[0], [filteredAlbums, selectedAlbumId]);
+  const artists = useMemo(() => Array.from(new Set(library.albums.map((album) => album.artist))).sort((left, right) => left.localeCompare(right)).map((name) => library.artists.find((artist) => artist.name.toLocaleLowerCase() === name.toLocaleLowerCase()) ?? { name, imageUrl: null, imageSource: null }), [library.albums, library.artists]);
   const activePlaylist = library.playlists.find((playlist) => playlist.id === selectedPlaylistId);
   const playlistTracks = activePlaylist ? activePlaylist.trackIds.map((id) => allTracks.find((track) => track.id === id)).filter(Boolean) as Track[] : [];
   const screenKey = view === "albums" ? `albums:${albumLayout}:${selectedArtist ?? "all"}` : view === "playlist" ? `playlist:${selectedPlaylistId ?? "none"}` : view;
@@ -74,33 +90,48 @@ export default function App() {
     localStorage.setItem("album-layout", layout);
   };
 
-  const playTrack = useCallback((track: Track, newQueue?: Track[]) => {
+  const playTrack = useCallback((track: Track, newQueue: Track[] | null = [track]) => {
     const audio = audioRef.current;
-    if (newQueue) setQueue(newQueue);
+    const requestId = ++playbackRequestRef.current;
+    shouldPlayRef.current = true;
+    loadedTrackIdRef.current = null;
+    audio.pause();
+    if (newQueue !== null) setQueue(newQueue);
     setCurrentTrack(track);
     setElapsed(0);
     void trackPlaybackUrl(track).then((url) => {
+      if (requestId !== playbackRequestRef.current) return;
       audio.src = url;
-      return audio.play();
-    }).catch(() => setNotice({ kind: "error", message: "This track could not be played. Check that the music location is available and the format is supported." }));
+      loadedTrackIdRef.current = track.id;
+      if (shouldPlayRef.current) return audio.play();
+    }).catch(() => {
+      shouldPlayRef.current = false;
+      setNotice({ kind: "error", message: "This track could not be played. Check that the music location is available and the format is supported." });
+    });
   }, []);
 
   const togglePlayback = useCallback(() => {
     const audio = audioRef.current;
     if (!currentTrack) {
-      const first = selectedAlbum?.tracks[0] ?? allTracks[0];
-      if (first) playTrack(first, selectedAlbum?.tracks ?? allTracks);
+      const first = queue[0] ?? selectedAlbum?.tracks[0] ?? allTracks[0];
+      if (first) playTrack(first, queue.length ? null : [first]);
       return;
     }
-    if (audio.paused) void audio.play().catch(() => setNotice({ kind: "error", message: "Playback failed because the file is currently unavailable." }));
-    else audio.pause();
-  }, [allTracks, currentTrack, playTrack, selectedAlbum]);
+    if (audio.paused) {
+      shouldPlayRef.current = true;
+      if (loadedTrackIdRef.current === currentTrack.id) void audio.play().catch(() => setNotice({ kind: "error", message: "Playback failed because the file is currently unavailable." }));
+    } else {
+      shouldPlayRef.current = false;
+      audio.pause();
+    }
+  }, [allTracks, currentTrack, playTrack, queue, selectedAlbum]);
 
   const nextTrack = useCallback(() => {
     if (!currentTrack || queue.length === 0) return;
     const index = queue.findIndex((track) => track.id === currentTrack.id);
-    const next = queue[index < 0 ? 0 : (index + 1) % queue.length];
-    if (next) playTrack(next);
+    const next = queue[index < 0 ? 0 : index + 1];
+    if (next) playTrack(next, null);
+    else shouldPlayRef.current = false;
   }, [currentTrack, playTrack, queue]);
 
   const previousTrack = useCallback(() => {
@@ -108,8 +139,8 @@ export default function App() {
     if (audio.currentTime > 3) { audio.currentTime = 0; return; }
     if (!currentTrack || queue.length === 0) return;
     const index = queue.findIndex((track) => track.id === currentTrack.id);
-    const previous = queue[index < 0 ? 0 : (index - 1 + queue.length) % queue.length];
-    if (previous) playTrack(previous);
+    const previous = queue[index > 0 ? index - 1 : -1];
+    if (previous) playTrack(previous, null);
   }, [currentTrack, playTrack, queue]);
 
   const runScan = useCallback(async (root: string) => {
@@ -132,7 +163,9 @@ export default function App() {
   const rescan = useCallback(async () => library.root ? runScan(library.root) : chooseAndScan(), [chooseAndScan, library.root, runScan]);
 
   useEffect(() => {
-    void recordShelf.getLibrary().then((snapshot) => { setLibrary(snapshot); setSelectedAlbumId(snapshot.albums[0]?.id ?? null); });
+    void recordShelf.getLibrary()
+      .then((snapshot) => { setLibrary(snapshot); setSelectedAlbumId(snapshot.albums[0]?.id ?? null); })
+      .catch(() => setNotice({ kind: "error", message: "The saved music catalogue could not be opened." }));
     const removeProgress = recordShelf.onScanProgress(setScanProgress);
     const removeArtworkProgress = recordShelf.onArtworkProgress(setArtworkProgress);
     const removeChoose = recordShelf.onChooseLibrary(() => void chooseAndScan());
@@ -144,7 +177,7 @@ export default function App() {
     const playing = () => setIsPlaying(true);
     const paused = () => setIsPlaying(false);
     const time = () => setElapsed(audio.currentTime);
-    const failed = () => setNotice({ kind: "error", message: "Playback stopped because the audio file could not be read." });
+    const failed = () => { shouldPlayRef.current = false; setNotice({ kind: "error", message: "Playback stopped because the audio file could not be read." }); };
     audio.addEventListener("play", playing); audio.addEventListener("pause", paused); audio.addEventListener("timeupdate", time);
     audio.addEventListener("ended", nextTrack); audio.addEventListener("error", failed);
     return () => {
@@ -157,7 +190,7 @@ export default function App() {
     if (command === "toggle") togglePlayback();
     if (command === "next") nextTrack();
     if (command === "previous") previousTrack();
-    if (command === "stop") { audioRef.current.pause(); audioRef.current.currentTime = 0; setElapsed(0); }
+    if (command === "stop") { shouldPlayRef.current = false; audioRef.current.pause(); audioRef.current.currentTime = 0; setElapsed(0); }
   }), [nextTrack, previousTrack, togglePlayback]);
 
   useEffect(() => {
@@ -184,6 +217,10 @@ export default function App() {
     if (main) main.scrollTop = screenPositionsRef.current[screenKey] ?? 0;
     if (view === "albums" && albumLayout === "shelf" && shelfRef.current) shelfRef.current.scrollLeft = shelfPositionsRef.current[screenKey] ?? 0;
   }, [albumLayout, screenKey, view]);
+
+  useLayoutEffect(() => {
+    if (albumLayout === "shelf" && trackScrollRef.current) trackScrollRef.current.scrollTop = 0;
+  }, [albumLayout, selectedAlbumId]);
 
   useEffect(() => {
     if (!currentTrack || !("mediaSession" in navigator)) return;
@@ -216,9 +253,12 @@ export default function App() {
 
   const fetchArtwork = async (album: Album) => {
     setArtworkBusy(album.id); setNotice({ kind: "info", message: `Searching MusicBrainz for “${album.title}”…` });
-    const response = await recordShelf.fetchAlbumArtwork(album.id);
-    setLibrary(response.library); setArtworkBusy(null);
-    setNotice({ kind: response.result.success ? "success" : "error", message: response.result.message });
+    try {
+      const response = await recordShelf.fetchAlbumArtwork(album.id);
+      setLibrary(response.library);
+      setNotice({ kind: response.result.success ? "success" : "error", message: response.result.message });
+    } catch { setNotice({ kind: "error", message: "The artwork service could not be reached. Try again later." }); }
+    finally { setArtworkBusy(null); }
   };
   const fetchAllMissingArtwork = async () => {
     setArtworkBusy("all"); setArtworkProgress(null); setNotice({ kind: "info", message: "Searching MusicBrainz and the Cover Art Archive for missing covers…" });
@@ -230,13 +270,25 @@ export default function App() {
     finally { setArtworkBusy(null); setArtworkProgress(null); }
   };
 
+  const fetchAllMissingArtistArtwork = async () => {
+    setArtistArtworkBusy(true); setArtworkProgress(null); setNotice({ kind: "info", message: "Finding artist portraits through MusicBrainz and Wikimedia…" });
+    try {
+      const response = await recordShelf.fetchMissingArtistArtwork();
+      setLibrary(response.library);
+      setNotice({ kind: "success", message: `Artist photo search complete · ${response.result.found} found · ${response.result.missing} unmatched` });
+    } catch { setNotice({ kind: "error", message: "Artist photos could not be retrieved. Try again later." }); }
+    finally { setArtistArtworkBusy(false); setArtworkProgress(null); }
+  };
+
   const openPlaylistDialog = (track: Track | null = null) => { setNewPlaylistName(""); setPlaylistDialog({ track }); };
   const createPlaylist = async () => {
     if (!newPlaylistName.trim()) return;
-    const playlist = await recordShelf.createPlaylist(newPlaylistName);
-    if (playlistDialog?.track) setLibrary(await recordShelf.addToPlaylist(playlist.id, playlistDialog.track.id));
-    else setLibrary((current) => ({ ...current, playlists: [...current.playlists, playlist] }));
-    setPlaylistDialog(null);
+    try {
+      const playlist = await recordShelf.createPlaylist(newPlaylistName);
+      if (playlistDialog?.track) setLibrary(await recordShelf.addToPlaylist(playlist.id, playlistDialog.track.id));
+      else setLibrary((current) => ({ ...current, playlists: [...current.playlists, playlist] }));
+      setPlaylistDialog(null);
+    } catch { setNotice({ kind: "error", message: "The playlist could not be created." }); }
   };
   const choosePlaylist = async (playlistId: string) => {
     if (!playlistDialog?.track) return;
@@ -273,8 +325,17 @@ export default function App() {
   };
 
   const addToQueue = (track: Track) => {
-    setQueue((current) => [...current, track]);
+    setQueue((current) => currentTrack && !current.some((item) => item.id === currentTrack.id) ? [currentTrack, ...current, track] : [...current, track]);
     setNotice({ kind: "success", message: `“${track.title}” added to Up Next` });
+  };
+
+  const addAlbumToQueue = (album: Album) => {
+    setQueue((current) => {
+      const runningOrder = currentTrack && !current.some((track) => track.id === currentTrack.id) ? [currentTrack, ...current] : current;
+      const tracksToAdd = currentTrack ? album.tracks.filter((track) => track.id !== currentTrack.id) : album.tracks;
+      return [...runningOrder, ...tracksToAdd];
+    });
+    setNotice({ kind: "success", message: `${album.tracks.length} tracks from “${album.title}” added to Up Next` });
   };
 
   const openTrackMenu = (track: Track, button: HTMLButtonElement) => {
@@ -286,9 +347,9 @@ export default function App() {
     setTrackMenu({ track, x, y });
   };
 
-  const trackRows = (tracks: Track[], playlistMode = false) => <div className="track-list">
-    {tracks.map((track, index) => <div key={`${track.id}-${index}`} className={currentTrack?.id === track.id ? "track active" : "track"} onDoubleClick={() => playTrack(track, tracks)}>
-      <button className="track-play" onClick={() => playTrack(track, tracks)} aria-label={`Play ${track.title}`}>{currentTrack?.id === track.id && isPlaying ? "❚❚" : track.trackNumber || index + 1}</button>
+  const trackRows = (tracks: Track[], playlistMode = false, preserveQueue = false) => <div className="track-list">
+    {tracks.map((track, index) => <div key={`${track.id}-${index}`} className={currentTrack?.id === track.id ? "track active" : "track"} onDoubleClick={() => playTrack(track, preserveQueue ? null : [track])}>
+      <button className="track-play" onClick={() => playTrack(track, preserveQueue ? null : [track])} aria-label={`Play ${track.title}`}>{currentTrack?.id === track.id && isPlaying ? "❚❚" : track.trackNumber || index + 1}</button>
       <div className="track-name"><b>{track.title}</b><span>{track.artist}</span></div>
       <span className="track-album">{track.album}</span>
       <button className="track-actions" title={`Actions for ${track.title}`} aria-label={`Actions for ${track.title}`} aria-haspopup="menu" onClick={(event) => { event.stopPropagation(); openTrackMenu(track, event.currentTarget); }}>•••</button>
@@ -298,8 +359,8 @@ export default function App() {
   </div>;
 
   const albumActions = selectedAlbum && <div className="album-actions">
-    <button className="primary" onClick={() => selectedAlbum.tracks[0] && playTrack(selectedAlbum.tracks[0], selectedAlbum.tracks)}>▶ Play</button>
-    <button onClick={() => setQueue(selectedAlbum.tracks)}>＋ Queue</button>
+    <button className="primary" onClick={() => selectedAlbum.tracks[0] && playTrack(selectedAlbum.tracks[0], [selectedAlbum.tracks[0]])}>▶ Play</button>
+    <button onClick={() => addAlbumToQueue(selectedAlbum)}>＋ Queue</button>
     <button onClick={() => void fetchArtwork(selectedAlbum)} disabled={artworkBusy !== null}>{artworkBusy === selectedAlbum.id ? "Searching…" : selectedAlbum.artworkUrl ? "↻ Find another cover" : "◇ Find cover online"}</button>
   </div>;
 
@@ -308,13 +369,13 @@ export default function App() {
       <div className="shelf-shell">
         <button className="shelf-arrow left" onClick={() => scrollShelf(-1)} aria-label="Scroll albums left">‹</button>
         <div className="album-shelf horizontal" ref={shelfRef} onScroll={(event) => { shelfPositionsRef.current[screenKey] = event.currentTarget.scrollLeft; }} onWheel={(event) => { if (Math.abs(event.deltaY) > Math.abs(event.deltaX) && shelfRef.current) { shelfRef.current.scrollLeft += event.deltaY; event.preventDefault(); } }}>
-          {filteredAlbums.map((album) => <button key={album.id} className={`album-card ${selectedAlbum.id === album.id ? "selected" : ""}`} onClick={() => showAlbum(album)} onDoubleClick={() => album.tracks[0] && playTrack(album.tracks[0], album.tracks)}><Artwork album={album} /><b>{album.title}</b><span>{album.artist}</span></button>)}
+          {filteredAlbums.map((album) => <button key={album.id} className={`album-card ${selectedAlbum.id === album.id ? "selected" : ""}`} onClick={() => showAlbum(album)} onDoubleClick={() => album.tracks[0] && playTrack(album.tracks[0], [album.tracks[0]])}><Artwork album={album} /><b>{album.title}</b><span>{album.artist}</span></button>)}
         </div>
         <button className="shelf-arrow right" onClick={() => scrollShelf(1)} aria-label="Scroll albums right">›</button>
       </div>
       <section className="shelf-tracks">
         <div className="selected-album-bar"><Artwork album={selectedAlbum} /><div><p className="eyebrow">NOW SELECTED</p><h2>{selectedAlbum.title}</h2><span>{selectedAlbum.artist} · {selectedAlbum.year ?? "Year unknown"} · {selectedAlbum.tracks.length} songs</span></div>{albumActions}</div>
-        <div className="track-scroll-region">{trackRows(selectedAlbum.tracks)}</div>
+        <div className="track-scroll-region" ref={trackScrollRef}>{trackRows(selectedAlbum.tracks)}</div>
       </section>
     </>}
     {albumLayout === "detail" && <div className="album-detail classic-detail">
@@ -322,8 +383,8 @@ export default function App() {
       <div className="album-info"><p className="eyebrow">ALBUM</p><h2>{selectedAlbum.title}</h2><h3>{selectedAlbum.artist}</h3><p>{selectedAlbum.year ?? "Year unknown"} · {selectedAlbum.tracks.length} songs · {formatTime(selectedAlbum.tracks.reduce((sum, track) => sum + track.duration, 0))}</p>{albumActions}</div>
       {trackRows(selectedAlbum.tracks)}
     </div>}
-    {albumLayout === "covers" && <div className="cover-grid">{filteredAlbums.map((album) => <button key={album.id} className={`cover-card ${selectedAlbum.id === album.id ? "selected" : ""}`} onClick={() => showAlbum(album)} onDoubleClick={() => album.tracks[0] && playTrack(album.tracks[0], album.tracks)}><Artwork album={album} /><b>{album.title}</b><span>{album.artist}</span><small>{album.year ?? ""}</small></button>)}</div>}
-    {albumLayout === "list" && <div className="album-list">{filteredAlbums.map((album) => <div key={album.id} className={`album-list-item ${selectedAlbum.id === album.id ? "selected" : ""}`}><button className="album-list-summary" onClick={() => setSelectedAlbumId(album.id)}><Artwork album={album} /><div><b>{album.title}</b><span>{album.artist}</span></div><span>{album.year ?? "—"}</span><span>{album.tracks.length} songs</span><time>{formatTime(album.tracks.reduce((sum, track) => sum + track.duration, 0))}</time><i>{selectedAlbum.id === album.id ? "⌃" : "⌄"}</i></button>{selectedAlbum.id === album.id && <div className="album-list-expanded">{trackRows(album.tracks)}</div>}</div>)}</div>}
+    {albumLayout === "covers" && <div className="cover-grid">{filteredAlbums.map((album) => <button key={album.id} className={`cover-card ${selectedAlbum.id === album.id ? "selected" : ""}`} onClick={() => showAlbum(album)} onDoubleClick={() => album.tracks[0] && playTrack(album.tracks[0], [album.tracks[0]])}><Artwork album={album} /><b>{album.title}</b><span>{album.artist}</span><small>{album.year ?? ""}</small></button>)}</div>}
+    {albumLayout === "list" && <div className="album-list">{filteredAlbums.map((album) => <div key={album.id} className={`album-list-item ${expandedAlbumId === album.id ? "selected" : ""}`}><button className="album-list-summary" aria-expanded={expandedAlbumId === album.id} onClick={() => { setSelectedAlbumId(album.id); setExpandedAlbumId((current) => current === album.id ? null : album.id); }}><Artwork album={album} /><div><b>{album.title}</b><span>{album.artist}</span></div><span>{album.year ?? "—"}</span><span>{album.tracks.length} songs</span><time>{formatTime(album.tracks.reduce((sum, track) => sum + track.duration, 0))}</time><i>{expandedAlbumId === album.id ? "⌃" : "⌄"}</i></button>{expandedAlbumId === album.id && <div className="album-list-expanded">{trackRows(album.tracks)}</div>}</div>)}</div>}
   </>;
 
   return <div className="app-shell">
@@ -348,10 +409,10 @@ export default function App() {
       {notice && <button className={`notice ${notice.kind}`} onClick={() => setNotice(null)}>{notice.message}<span>×</span></button>}
 
       {library.albums.length === 0 && !scanProgress ? <section className="empty-state"><div className="empty-record"><span>♪</span></div><p className="eyebrow">WELCOME TO YOUR COLLECTION</p><h1>Music should feel tangible.</h1><p>{isNativeAndroid ? "Choose a music folder from Android's Files screen. Local folders and NAS shares exposed by a compatible file provider can be indexed without copying your music." : "Choose the music folder mounted from your NAS. Record Shelf builds a fast local catalogue while your original files stay exactly where they are."}</p><button onClick={() => void chooseAndScan()}>Choose Music Folder</button><small>{isNativeAndroid ? "Folder access is retained across restarts" : "Works with SMB shares mounted in Finder"}</small></section> : <>
-        {view === "albums" && <section className={`collection-view layout-${albumLayout}`}><div className="section-title"><div><p className="eyebrow">{selectedArtist ? "ARTIST" : "THE RECORD SHELF"}</p><h1>{selectedArtist ?? "Albums"}</h1></div><div className="section-tools"><span>{filteredAlbums.length} albums · {filteredAlbums.flatMap((album) => album.tracks).length} songs</span>{selectedArtist && <button className="clear-filter-button" onClick={() => setSelectedArtist(null)}>All Albums</button>}<LayoutSwitcher value={albumLayout} onChange={setAlbumLayout} /></div></div>{albumView}</section>}
-        {view === "artists" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">BROWSE</p><h1>Artists</h1></div></div><div className="artist-grid">{Array.from(new Set(library.albums.map((album) => album.artist))).filter((artist) => artist.toLowerCase().includes(query.toLowerCase())).sort().map((artist) => <button key={artist} onClick={() => showArtist(artist)}><div className="artist-avatar">{artist.slice(0, 2).toUpperCase()}</div><b>{artist}</b><span>{library.albums.filter((album) => album.artist === artist).length} albums</span></button>)}</div></section>}
+        {view === "albums" && <section className={`collection-view layout-${albumLayout}`}><div className="section-title"><div><p className="eyebrow">{selectedArtist ? "ARTIST" : "THE RECORD SHELF"}</p><h1>{selectedArtist ?? "Albums"}</h1></div><div className="section-tools"><span>{filteredAlbums.length} albums · {filteredAlbums.flatMap((album) => album.tracks).length} songs</span>{selectedArtist && <button className="clear-filter-button" onClick={() => setSelectedArtist(null)}>All Albums</button>}<LayoutSwitcher value={albumLayout} onChange={setAlbumLayout} /></div></div>{albumView ?? <div className="filter-empty"><span>⌕</span><h2>No albums match</h2><p>Try another search or clear the current filter.</p><button onClick={() => { setQuery(""); setSelectedArtist(null); }}>Clear Search</button></div>}</section>}
+        {view === "artists" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">BROWSE</p><h1>Artists</h1></div>{!isNativeAndroid && <button className="clear-filter-button" onClick={() => void fetchAllMissingArtistArtwork()} disabled={artistArtworkBusy}>{artistArtworkBusy ? "Finding Photos…" : "Find Artist Photos"}</button>}</div><div className="artist-grid">{artists.filter((artist) => artist.name.toLowerCase().includes(query.toLowerCase())).map((artist) => <button key={artist.name} onClick={() => showArtist(artist.name)}><ArtistArtwork artist={artist} fallbackAlbum={library.albums.find((album) => album.artist === artist.name && album.artworkUrl !== null)} /><b>{artist.name}</b><span>{library.albums.filter((album) => album.artist === artist.name).length} albums</span></button>)}</div></section>}
         {(view === "songs" || view === "playlist") && <section className="list-view"><div className="section-title"><div><p className="eyebrow">{view === "playlist" ? "PLAYLIST" : "LIBRARY"}</p><h1>{view === "playlist" ? activePlaylist?.name : "Songs"}</h1></div><div className="playlist-title-actions"><span>{view === "playlist" ? playlistTracks.length : allTracks.length} songs</span>{view === "playlist" && activePlaylist && <button className="delete-playlist-button" onClick={() => setPlaylistToDelete({ id: activePlaylist.id, name: activePlaylist.name })}>Delete Playlist</button>}</div></div>{trackRows((view === "playlist" ? playlistTracks : allTracks).filter((track) => `${track.title} ${track.artist} ${track.album}`.toLowerCase().includes(query.toLowerCase())), view === "playlist")}</section>}
-        {view === "queue" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">RUNNING ORDER</p><h1>Up Next</h1></div><span>{queue.length} {queue.length === 1 ? "track" : "tracks"}</span></div>{queue.length ? trackRows(queue) : <div className="queue-empty"><span>☷</span><h2>Your queue is empty</h2><p>Use the ••• action button on any track, then choose Play Next or Add to Queue.</p></div>}</section>}
+        {view === "queue" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">RUNNING ORDER</p><h1>Up Next</h1></div><span>{queue.length} {queue.length === 1 ? "track" : "tracks"}</span></div>{queue.length ? trackRows(queue, false, true) : <div className="queue-empty"><span>☷</span><h2>Your queue is empty</h2><p>Use the ••• action button on any track, then choose Play Next or Add to Queue.</p></div>}</section>}
       </>}
     </main>
 
