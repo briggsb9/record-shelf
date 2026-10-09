@@ -1,8 +1,23 @@
 # Record Shelf
 
-Record Shelf is an album-first music player for macOS, Windows and Android libraries stored locally or on a NAS. It builds a fast local catalogue, retains cover artwork locally, and plays the original files directly from their source.
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Android APK](https://github.com/briggsb9/record-shelf/actions/workflows/android.yml/badge.svg)](https://github.com/briggsb9/record-shelf/actions/workflows/android.yml)
+
+Record Shelf is an open-source, album-first music player for libraries stored locally or on a NAS. It builds a fast local catalogue, retains cover artwork locally, and plays the original files directly from their source.
 
 ![Record Shelf showing the album shelf, selected album and track list](docs/assets/record-shelf-main.png)
+
+The project currently targets:
+
+- **macOS:** primary desktop development and testing platform.
+- **Android:** phone and tablet test builds distributed as debug APKs.
+- **Windows:** shared Electron application and packaging configuration are present; broader platform QA is still pending.
+
+Record Shelf is under active development. Back up important playlists and catalogue data before testing a new release.
+
+## Download a test build
+
+The [GitHub releases page](https://github.com/briggsb9/record-shelf/releases) includes an Android debug APK for each completed tagged build. macOS and Windows users currently build from source using the instructions below; the locally produced desktop packages are not code-signed for public distribution.
 
 ## macOS development
 
@@ -26,7 +41,7 @@ To get an APK without installing Android Studio:
 
 For music on a NAS, first configure an Android file manager or Documents Provider that exposes the SMB share in Android's system **Files** picker. In Record Shelf, tap **Choose Music Folder** and select that exposed folder. Provider performance and supported audio codecs vary by device; no music is copied into Record Shelf.
 
-This is an unsigned-for-production debug APK intended for sideloaded testing, not a Play Store release. GitHub Actions retains each ordinary build artifact for 30 days. Tagged builds are also attached to a persistent GitHub prerelease: create and push a tag such as `v0.3.0` when a test build is ready to keep.
+This is an unsigned-for-production debug APK intended for sideloaded testing, not a Play Store release. GitHub Actions retains each ordinary build artifact for 30 days. Tagged builds are also attached to a persistent GitHub prerelease.
 
 ### Local Android development
 
@@ -62,6 +77,12 @@ The Artists view displays cached artist portraits when available and falls back 
 
 Windows can use a mapped drive or UNC share. The shared Electron/TypeScript application needs no architectural rewrite for Windows; platform-specific packaging and media-key QA remain separate release work.
 
+## Privacy and network access
+
+Record Shelf does not upload or copy your music library. Catalogue data and downloaded artwork are stored locally by the app. Playback reads the original files from the selected local folder or mounted share.
+
+Online artwork features are optional. When used, they send artist and album search terms to MusicBrainz, the Cover Art Archive and, for artist portraits, Wikipedia or Wikimedia Commons. Record Shelf currently includes no analytics or advertising SDK.
+
 ## Keyboard controls
 
 - Space: play/pause
@@ -72,3 +93,11 @@ Windows can use a mapped drive or UNC share. The shared Electron/TypeScript appl
 - Command/Ctrl + L: focus search
 
 Hardware play/pause, previous and next media keys are registered while the app is running.
+
+## Contributing
+
+Contributions and reproducible bug reports are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing and pull-request guidance. Please report suspected vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
+## Licence
+
+Record Shelf is open-source software released under the [MIT License](LICENSE). You may use, copy, modify and redistribute the software under the terms of that licence. The project name, screenshots and third-party album artwork are not a grant of rights to music or artwork owned by others.

@@ -4,6 +4,16 @@
   "private": true,
   "type": "module",
   "description": "A fast, album-first music player for desktop, Android and NAS libraries.",
+  "author": "briggsb9",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/briggsb9/record-shelf.git"
+  },
+  "bugs": {
+    "url": "https://github.com/briggsb9/record-shelf/issues"
+  },
+  "homepage": "https://github.com/briggsb9/record-shelf#readme",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "npm run build:electron && concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
