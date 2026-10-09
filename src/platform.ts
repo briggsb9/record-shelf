@@ -23,10 +23,14 @@ export const isNativeAndroid = Capacitor.getPlatform() === "android";
 
 function normaliseLibrary(library: Library): Library {
   const artists = Array.isArray(library.artists) ? library.artists : [];
-  if (!isNativeAndroid) return { ...library, artists };
+  const albums = library.albums.map((album) => ({
+    ...album,
+    tracks: album.tracks.map((track) => ({ ...track, genres: Array.isArray(track.genres) ? track.genres.filter((genre): genre is string => typeof genre === "string" && genre.trim().length > 0) : [] })),
+  }));
+  if (!isNativeAndroid) return { ...library, albums, artists };
   return {
     ...library,
-    albums: library.albums.map((album) => ({
+    albums: albums.map((album) => ({
       ...album,
       artworkUrl: album.artworkUrl ? Capacitor.convertFileSrc(album.artworkUrl) : null,
     })),

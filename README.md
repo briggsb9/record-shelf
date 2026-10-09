@@ -15,7 +15,7 @@ The first scan reads tags and artwork sequentially to avoid overwhelming a NAS. 
 
 ## Test the Android app
 
-The Android preview supports phones and tablets with touch-sized controls, responsive album layouts, playlists and the visible **•••** action button for Play Next, Add to Queue and Add to Playlist. It scans through Android's system folder picker, stores its catalogue in private app storage, retains the folder permission across restarts, and caches embedded album art inside the app.
+The Android preview supports phones and tablets with touch-sized controls, responsive album layouts, playlists, artist/genre/playlist shuffle, and the visible **•••** action button for Play Next, Add to Queue and Add to Playlist. It scans through Android's system folder picker, stores its catalogue in private app storage, retains the folder permission across restarts, and caches embedded album art inside the app.
 
 To get an APK without installing Android Studio:
 
@@ -47,6 +47,8 @@ To build a debug APK directly, run `npm run android:apk`. The output is `android
 - **List** displays compact album rows that expand to reveal their tracks.
 
 Record Shelf uses embedded artwork first, then common folder images such as `cover.jpg` and `folder.jpg`. Use **Find Artwork** to retrieve missing covers from MusicBrainz and the Cover Art Archive. Individual albums can also be refreshed. Online artwork requests send the album and artist names to MusicBrainz and are limited to one search per second.
+
+The Artists and Genres screens have explicit **Shuffle** controls, and every playlist has its own **Shuffle Playlist** action. A shuffled collection becomes the visible **Up Next** running order and begins playing immediately. Genres come from the music files' embedded tags; tracks without a genre are grouped under **Unknown Genre**. Desktop libraries created before v0.5.0 reread metadata once on the next rescan to populate the new genre catalogue.
 
 The Artists view displays cached artist portraits when available and falls back to a representative album cover. **Find Artist Photos** matches artists through MusicBrainz, retrieves freely reusable images from Wikipedia or Wikimedia Commons, and keeps the downloaded portraits in Record Shelf's local artwork cache across restarts. Android currently uses the album-cover fallback for artist cards.
 

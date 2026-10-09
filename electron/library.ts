@@ -6,12 +6,12 @@ import { parseFile } from "music-metadata";
 
 const AUDIO_EXTENSIONS = new Set([".aac", ".aif", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma"]);
 const COVER_NAMES = ["cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"];
-const MUSICBRAINZ_USER_AGENT = "RecordShelf/0.4.0 (desktop-music-player)";
+const MUSICBRAINZ_USER_AGENT = "RecordShelf/0.5.0 (desktop-music-player)";
 const MAX_ARTWORK_BYTES = 15 * 1024 * 1024;
 
 export type ScanProgress = { phase: "discovering" | "reading" | "finishing"; current: number; total: number; file?: string };
 export type ArtworkProgress = { current: number; total: number; album: string; status: "searching" | "found" | "missing" | "error" };
-export type Track = { id: number; albumId: string; path: string; title: string; artist: string; album: string; albumArtist: string; trackNumber: number; discNumber: number; duration: number; year: number | null };
+export type Track = { id: number; albumId: string; path: string; title: string; artist: string; album: string; albumArtist: string; trackNumber: number; discNumber: number; duration: number; year: number | null; genres: string[] };
 export type Album = { id: string; title: string; artist: string; year: number | null; artworkUrl: string | null; artworkSource: "embedded" | "folder" | "musicbrainz" | null; tracks: Track[] };
 export type Artist = { name: string; imageUrl: string | null; imageSource: "wikimedia" | null };
 export type Playlist = { id: string; name: string; trackIds: number[] };
@@ -22,12 +22,31 @@ const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(reso
 const fetchWithTimeout = (input: string | URL, init: RequestInit = {}) => fetch(input, { ...init, signal: AbortSignal.timeout(20_000) });
 const normalise = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 const escapeLucene = (value: string) => value.replace(/([+\-&|!(){}[\]^"~*?:\\/])/g, "\\$1");
+const normaliseGenres = (values: readonly string[] | undefined): string[] => {
+  const genres: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values ?? []) {
+    for (const part of value.split(/[;,]/)) {
+      const genre = part.trim();
+      const key = genre.toLocaleLowerCase();
+      if (genre && !seen.has(key)) { seen.add(key); genres.push(genre); }
+    }
+  }
+  return genres;
+};
+const parseGenres = (value: unknown): string[] => {
+  try {
+    const parsed = JSON.parse(String(value ?? "[]"));
+    return Array.isArray(parsed) ? normaliseGenres(parsed.filter((item): item is string => typeof item === "string")) : [];
+  } catch { return []; }
+};
 
 export class MusicLibrary {
   private readonly db: DatabaseSync;
   private readonly artworkDirectory: string;
   private musicBrainzQueue: Promise<void> = Promise.resolve();
   private lastMusicBrainzRequest = 0;
+  private genreMetadataReady = false;
 
   constructor(databasePath: string, artworkDirectory: string) {
     this.db = new DatabaseSync(databasePath);
@@ -44,6 +63,7 @@ export class MusicLibrary {
         album_id TEXT NOT NULL REFERENCES albums(id) ON DELETE CASCADE, title TEXT NOT NULL, artist TEXT NOT NULL,
         album TEXT NOT NULL, album_artist TEXT NOT NULL, track_number INTEGER NOT NULL DEFAULT 0,
         disc_number INTEGER NOT NULL DEFAULT 0, duration REAL NOT NULL DEFAULT 0, year INTEGER,
+        genres TEXT NOT NULL DEFAULT '[]',
         modified_ms REAL NOT NULL, scan_token TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS tracks_album_id ON tracks(album_id);
@@ -62,11 +82,19 @@ export class MusicLibrary {
     this.ensureAlbumColumn("artwork_source", "TEXT");
     this.ensureAlbumColumn("artwork_updated_at", "INTEGER NOT NULL DEFAULT 0");
     this.ensureAlbumColumn("musicbrainz_id", "TEXT");
+    this.ensureTrackColumn("genres", "TEXT NOT NULL DEFAULT '[]'");
+    const genreVersion = this.db.prepare("SELECT value FROM settings WHERE key = 'genre_metadata_version'").get() as Row | undefined;
+    this.genreMetadataReady = genreVersion?.value === "1";
   }
 
   private ensureAlbumColumn(name: string, definition: string): void {
     const columns = this.db.prepare("PRAGMA table_info(albums)").all() as Row[];
     if (!columns.some((column) => column.name === name)) this.db.exec(`ALTER TABLE albums ADD COLUMN ${name} ${definition}`);
+  }
+
+  private ensureTrackColumn(name: string, definition: string): void {
+    const columns = this.db.prepare("PRAGMA table_info(tracks)").all() as Row[];
+    if (!columns.some((column) => column.name === name)) this.db.exec(`ALTER TABLE tracks ADD COLUMN ${name} ${definition}`);
   }
 
   getLibraryRoot(): string | null {
@@ -91,7 +119,7 @@ export class MusicLibrary {
 
   snapshot(): { root: string | null; albums: Album[]; artists: Artist[]; playlists: Playlist[] } {
     const albumRows = this.db.prepare("SELECT * FROM albums ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE").all() as Row[];
-    const trackRows = this.db.prepare(`SELECT id, album_id, path, title, artist, album, album_artist, track_number, disc_number, duration, year FROM tracks ORDER BY album_artist COLLATE NOCASE, album COLLATE NOCASE, disc_number, track_number, title COLLATE NOCASE`).all() as Row[];
+    const trackRows = this.db.prepare(`SELECT id, album_id, path, title, artist, album, album_artist, track_number, disc_number, duration, year, genres FROM tracks ORDER BY album_artist COLLATE NOCASE, album COLLATE NOCASE, disc_number, track_number, title COLLATE NOCASE`).all() as Row[];
     const tracksByAlbum = new Map<string, Track[]>();
     for (const row of trackRows) {
       const albumId = String(row.album_id);
@@ -99,6 +127,7 @@ export class MusicLibrary {
         id: Number(row.id), albumId, path: String(row.path), title: String(row.title), artist: String(row.artist),
         album: String(row.album), albumArtist: String(row.album_artist), trackNumber: Number(row.track_number),
         discNumber: Number(row.disc_number), duration: Number(row.duration), year: row.year == null ? null : Number(row.year),
+        genres: parseGenres(row.genres),
       };
       const list = tracksByAlbum.get(albumId) ?? [];
       list.push(track);
@@ -175,11 +204,11 @@ export class MusicLibrary {
         artwork_updated_at = CASE WHEN excluded.artwork_path IS NOT NULL THEN excluded.artwork_updated_at ELSE albums.artwork_updated_at END
     `);
     const upsertTrack = this.db.prepare(`
-      INSERT INTO tracks (path, source_root, album_id, title, artist, album, album_artist, track_number, disc_number, duration, year, modified_ms, scan_token)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tracks (path, source_root, album_id, title, artist, album, album_artist, track_number, disc_number, duration, year, genres, modified_ms, scan_token)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(path) DO UPDATE SET album_id = excluded.album_id, title = excluded.title, artist = excluded.artist,
         album = excluded.album, album_artist = excluded.album_artist, track_number = excluded.track_number,
-        disc_number = excluded.disc_number, duration = excluded.duration, year = excluded.year,
+        disc_number = excluded.disc_number, duration = excluded.duration, year = excluded.year, genres = excluded.genres,
         modified_ms = excluded.modified_ms, scan_token = excluded.scan_token, source_root = excluded.source_root
     `);
     const artworkFound = new Set<string>();
@@ -190,7 +219,7 @@ export class MusicLibrary {
       try {
         const fileStat = await stat(file);
         const existing = existingFile.get(file) as Row | undefined;
-        if (existing && Math.abs(Number(existing.modified_ms) - fileStat.mtimeMs) < 1) {
+        if (existing && this.genreMetadataReady && Math.abs(Number(existing.modified_ms) - fileStat.mtimeMs) < 1) {
           markUnchanged.run(scanToken, root, file);
           const existingAlbumId = existing.album_id ? String(existing.album_id) : null;
           if (existingAlbumId && !artworkChecked.has(existingAlbumId) && !this.getArtworkPath(existingAlbumId)) {
@@ -213,7 +242,7 @@ export class MusicLibrary {
           if (artwork) artworkFound.add(albumId);
         }
         upsertAlbum.run(albumId, album, albumArtist, common.year ?? null, artwork?.path ?? null, artwork?.source ?? null, artwork ? Date.now() : 0);
-        upsertTrack.run(file, root, albumId, title, artist, album, albumArtist, common.track.no ?? 0, common.disk.no ?? 0, metadata.format.duration ?? 0, common.year ?? null, fileStat.mtimeMs, scanToken);
+        upsertTrack.run(file, root, albumId, title, artist, album, albumArtist, common.track.no ?? 0, common.disk.no ?? 0, metadata.format.duration ?? 0, common.year ?? null, JSON.stringify(normaliseGenres(common.genre)), fileStat.mtimeMs, scanToken);
       } catch (error) {
         if (existingFile.get(file)) markUnchanged.run(scanToken, root, file);
         console.warn(`Could not read metadata for ${file}`, error);
@@ -228,6 +257,8 @@ export class MusicLibrary {
     this.db.prepare("DELETE FROM tracks WHERE source_root != ?").run(root);
     this.db.prepare("DELETE FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks)").run();
     this.db.prepare("INSERT INTO settings (key, value) VALUES ('library_root', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(root);
+    this.db.prepare("INSERT INTO settings (key, value) VALUES ('genre_metadata_version', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+    this.genreMetadataReady = true;
   }
 
   async fetchAlbumArtwork(albumId: string): Promise<ArtworkResult> {

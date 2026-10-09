@@ -319,6 +319,7 @@ public class RecordShelfPlugin extends Plugin {
                 track.put("discNumber", parseLeadingInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DISC_NUMBER)));
                 track.put("duration", parseLong(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)) / 1000.0);
                 track.put("year", year == 0 ? JSONObject.NULL : year);
+                track.put("genres", genreArray(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)));
 
                 List<JSONObject> albumTracks = tracksByAlbum.computeIfAbsent(albumId, ignored -> new ArrayList<>());
                 albumTracks.add(track);
@@ -519,6 +520,17 @@ public class RecordShelfPlugin extends Plugin {
 
     private long parseLong(String value) {
         try { return value == null ? 0 : Long.parseLong(value); } catch (Exception ignored) { return 0; }
+    }
+
+    private JSONArray genreArray(String value) {
+        JSONArray genres = new JSONArray();
+        if (value == null) return genres;
+        Set<String> seen = new HashSet<>();
+        for (String part : value.split("[;,]")) {
+            String genre = part.trim();
+            if (!genre.isEmpty() && seen.add(genre.toLowerCase(Locale.ROOT))) genres.put(genre);
+        }
+        return genres;
     }
 
     private int stableTrackId(String value) throws Exception {

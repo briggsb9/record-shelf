@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { Album, Artist, ArtworkProgress, Library, ScanProgress, Track } from "./types";
 import { isNativeAndroid, recordShelf, trackPlaybackUrl } from "./platform";
 
-type View = "albums" | "artists" | "songs" | "playlist" | "queue";
+type View = "albums" | "artists" | "genres" | "songs" | "playlist" | "queue";
 type AlbumLayout = "shelf" | "detail" | "covers" | "list";
 type Notice = { kind: "success" | "error" | "info"; message: string };
 
@@ -77,10 +77,30 @@ export default function App() {
   const currentAlbum = useMemo(() => library.albums.find((album) => album.id === currentTrack?.albumId), [library.albums, currentTrack]);
   const filteredAlbums = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
-    return library.albums.filter((album) => (!selectedArtist || album.artist === selectedArtist) && (!needle || `${album.title} ${album.artist} ${album.year ?? ""} ${album.tracks.map((track) => track.title).join(" ")}`.toLocaleLowerCase().includes(needle)));
+    return library.albums.filter((album) => (!selectedArtist || album.artist === selectedArtist) && (!needle || `${album.title} ${album.artist} ${album.year ?? ""} ${album.tracks.map((track) => `${track.title} ${(track.genres ?? []).join(" ")}`).join(" ")}`.toLocaleLowerCase().includes(needle)));
   }, [library.albums, query, selectedArtist]);
   const selectedAlbum = useMemo(() => filteredAlbums.find((album) => album.id === selectedAlbumId) ?? filteredAlbums[0], [filteredAlbums, selectedAlbumId]);
   const artists = useMemo(() => Array.from(new Set(library.albums.map((album) => album.artist))).sort((left, right) => left.localeCompare(right)).map((name) => library.artists.find((artist) => artist.name.toLocaleLowerCase() === name.toLocaleLowerCase()) ?? { name, imageUrl: null, imageSource: null }), [library.albums, library.artists]);
+  const genreGroups = useMemo(() => {
+    const groups = new Map<string, { name: string; tracks: Track[]; trackIds: Set<number> }>();
+    for (const track of allTracks) {
+      const names = track.genres?.length ? track.genres : ["Unknown Genre"];
+      for (const rawName of names) {
+        const name = rawName.trim();
+        if (!name) continue;
+        const key = name.toLocaleLowerCase();
+        const group = groups.get(key) ?? { name, tracks: [], trackIds: new Set<number>() };
+        if (!group.trackIds.has(track.id)) { group.trackIds.add(track.id); group.tracks.push(track); }
+        groups.set(key, group);
+      }
+    }
+    return Array.from(groups.values()).sort((left, right) => left.name.localeCompare(right.name));
+  }, [allTracks]);
+  const filteredGenreGroups = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase();
+    return genreGroups.filter((group) => !needle || `${group.name} ${group.tracks.map((track) => `${track.title} ${track.artist} ${track.album}`).join(" ")}`.toLocaleLowerCase().includes(needle));
+  }, [genreGroups, query]);
+  const selectedArtistTracks = useMemo(() => selectedArtist ? library.albums.filter((album) => album.artist === selectedArtist).flatMap((album) => album.tracks) : [], [library.albums, selectedArtist]);
   const activePlaylist = library.playlists.find((playlist) => playlist.id === selectedPlaylistId);
   const playlistTracks = activePlaylist ? activePlaylist.trackIds.map((id) => allTracks.find((track) => track.id === id)).filter(Boolean) as Track[] : [];
   const screenKey = view === "albums" ? `albums:${albumLayout}:${selectedArtist ?? "all"}` : view === "playlist" ? `playlist:${selectedPlaylistId ?? "none"}` : view;
@@ -109,6 +129,20 @@ export default function App() {
       setNotice({ kind: "error", message: "This track could not be played. Check that the music location is available and the format is supported." });
     });
   }, []);
+
+  const shuffleAndPlay = useCallback((tracks: Track[], label: string) => {
+    if (tracks.length === 0) {
+      setNotice({ kind: "info", message: `${label} has no songs to shuffle` });
+      return;
+    }
+    const shuffled = [...tracks];
+    for (let index = shuffled.length - 1; index > 0; index -= 1) {
+      const randomIndex = Math.floor(Math.random() * (index + 1));
+      [shuffled[index], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[index]];
+    }
+    playTrack(shuffled[0], shuffled);
+    setNotice({ kind: "success", message: `Shuffling ${label} · ${shuffled.length} ${shuffled.length === 1 ? "song" : "songs"}` });
+  }, [playTrack]);
 
   const togglePlayback = useCallback(() => {
     const audio = audioRef.current;
@@ -394,6 +428,7 @@ export default function App() {
       <nav><p>LIBRARY</p>
         <button className={view === "albums" ? "active" : ""} onClick={() => { setSelectedArtist(null); setView("albums"); }}><span>▦</span> Albums</button>
         <button className={view === "artists" ? "active" : ""} onClick={() => setView("artists")}><span>♬</span> Artists</button>
+        <button className={view === "genres" ? "active" : ""} onClick={() => setView("genres")}><span>◆</span> Genres</button>
         <button className={view === "songs" ? "active" : ""} onClick={() => setView("songs")}><span>≡</span> Songs</button>
         <p className="playlist-heading">PLAYLISTS <button className="add" onClick={() => openPlaylistDialog()} title="New playlist">＋</button></p>
         <button className={view === "queue" ? "active" : ""} onClick={() => { setSelectedPlaylistId(null); setView("queue"); }}><span>☷</span>Up Next<small className="queue-count">{queue.length}</small></button>
@@ -409,9 +444,10 @@ export default function App() {
       {notice && <button className={`notice ${notice.kind}`} onClick={() => setNotice(null)}>{notice.message}<span>×</span></button>}
 
       {library.albums.length === 0 && !scanProgress ? <section className="empty-state"><div className="empty-record"><span>♪</span></div><p className="eyebrow">WELCOME TO YOUR COLLECTION</p><h1>Music should feel tangible.</h1><p>{isNativeAndroid ? "Choose a music folder from Android's Files screen. Local folders and NAS shares exposed by a compatible file provider can be indexed without copying your music." : "Choose the music folder mounted from your NAS. Record Shelf builds a fast local catalogue while your original files stay exactly where they are."}</p><button onClick={() => void chooseAndScan()}>Choose Music Folder</button><small>{isNativeAndroid ? "Folder access is retained across restarts" : "Works with SMB shares mounted in Finder"}</small></section> : <>
-        {view === "albums" && <section className={`collection-view layout-${albumLayout}`}><div className="section-title"><div><p className="eyebrow">{selectedArtist ? "ARTIST" : "THE RECORD SHELF"}</p><h1>{selectedArtist ?? "Albums"}</h1></div><div className="section-tools"><span>{filteredAlbums.length} albums · {filteredAlbums.flatMap((album) => album.tracks).length} songs</span>{selectedArtist && <button className="clear-filter-button" onClick={() => setSelectedArtist(null)}>All Albums</button>}<LayoutSwitcher value={albumLayout} onChange={setAlbumLayout} /></div></div>{albumView ?? <div className="filter-empty"><span>⌕</span><h2>No albums match</h2><p>Try another search or clear the current filter.</p><button onClick={() => { setQuery(""); setSelectedArtist(null); }}>Clear Search</button></div>}</section>}
-        {view === "artists" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">BROWSE</p><h1>Artists</h1></div>{!isNativeAndroid && <button className="clear-filter-button" onClick={() => void fetchAllMissingArtistArtwork()} disabled={artistArtworkBusy}>{artistArtworkBusy ? "Finding Photos…" : "Find Artist Photos"}</button>}</div><div className="artist-grid">{artists.filter((artist) => artist.name.toLowerCase().includes(query.toLowerCase())).map((artist) => <button key={artist.name} onClick={() => showArtist(artist.name)}><ArtistArtwork artist={artist} fallbackAlbum={library.albums.find((album) => album.artist === artist.name && album.artworkUrl !== null)} /><b>{artist.name}</b><span>{library.albums.filter((album) => album.artist === artist.name).length} albums</span></button>)}</div></section>}
-        {(view === "songs" || view === "playlist") && <section className="list-view"><div className="section-title"><div><p className="eyebrow">{view === "playlist" ? "PLAYLIST" : "LIBRARY"}</p><h1>{view === "playlist" ? activePlaylist?.name : "Songs"}</h1></div><div className="playlist-title-actions"><span>{view === "playlist" ? playlistTracks.length : allTracks.length} songs</span>{view === "playlist" && activePlaylist && <button className="delete-playlist-button" onClick={() => setPlaylistToDelete({ id: activePlaylist.id, name: activePlaylist.name })}>Delete Playlist</button>}</div></div>{trackRows((view === "playlist" ? playlistTracks : allTracks).filter((track) => `${track.title} ${track.artist} ${track.album}`.toLowerCase().includes(query.toLowerCase())), view === "playlist")}</section>}
+        {view === "albums" && <section className={`collection-view layout-${albumLayout}`}><div className="section-title"><div><p className="eyebrow">{selectedArtist ? "ARTIST" : "THE RECORD SHELF"}</p><h1>{selectedArtist ?? "Albums"}</h1></div><div className="section-tools"><span>{filteredAlbums.length} albums · {filteredAlbums.flatMap((album) => album.tracks).length} songs</span>{selectedArtist && <button className="shuffle-button" onClick={() => shuffleAndPlay(selectedArtistTracks, selectedArtist)}>Shuffle Artist</button>}{selectedArtist && <button className="clear-filter-button" onClick={() => setSelectedArtist(null)}>All Albums</button>}<LayoutSwitcher value={albumLayout} onChange={setAlbumLayout} /></div></div>{albumView ?? <div className="filter-empty"><span>⌕</span><h2>No albums match</h2><p>Try another search or clear the current filter.</p><button onClick={() => { setQuery(""); setSelectedArtist(null); }}>Clear Search</button></div>}</section>}
+        {view === "artists" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">BROWSE</p><h1>Artists</h1></div>{!isNativeAndroid && <button className="clear-filter-button" onClick={() => void fetchAllMissingArtistArtwork()} disabled={artistArtworkBusy}>{artistArtworkBusy ? "Finding Photos…" : "Find Artist Photos"}</button>}</div><div className="artist-grid">{artists.filter((artist) => artist.name.toLowerCase().includes(query.toLowerCase())).map((artist) => { const artistAlbums = library.albums.filter((album) => album.artist === artist.name); const artistTracks = artistAlbums.flatMap((album) => album.tracks); return <article className="artist-card" key={artist.name}><button className="artist-open" onClick={() => showArtist(artist.name)} aria-label={`View albums by ${artist.name}`}><ArtistArtwork artist={artist} fallbackAlbum={artistAlbums.find((album) => album.artworkUrl !== null)} /><b>{artist.name}</b><span>{artistAlbums.length} albums</span></button><button className="shuffle-button" onClick={() => shuffleAndPlay(artistTracks, artist.name)}>Shuffle</button></article>; })}</div></section>}
+        {view === "genres" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">BROWSE</p><h1>Genres</h1></div><span>{genreGroups.length} {genreGroups.length === 1 ? "genre" : "genres"}</span></div>{filteredGenreGroups.length ? <div className="genre-grid">{filteredGenreGroups.map((group) => { const artistNames = Array.from(new Set(group.tracks.map((track) => track.artist))); return <article className="genre-card" key={group.name}><p className="eyebrow">GENRE</p><h2>{group.name}</h2><p>{group.tracks.length} {group.tracks.length === 1 ? "song" : "songs"} · {artistNames.length} {artistNames.length === 1 ? "artist" : "artists"}</p><span>{artistNames.slice(0, 4).join(" · ")}</span><button className="shuffle-button" onClick={() => shuffleAndPlay(group.tracks, group.name)}>Shuffle {group.name}</button></article>; })}</div> : <div className="filter-empty"><span>⌕</span><h2>No genres match</h2><p>Try another search.</p><button onClick={() => setQuery("")}>Clear Search</button></div>}</section>}
+        {(view === "songs" || view === "playlist") && <section className="list-view"><div className="section-title"><div><p className="eyebrow">{view === "playlist" ? "PLAYLIST" : "LIBRARY"}</p><h1>{view === "playlist" ? activePlaylist?.name : "Songs"}</h1></div><div className="playlist-title-actions"><span>{view === "playlist" ? playlistTracks.length : allTracks.length} songs</span>{view === "playlist" && activePlaylist && <button className="shuffle-button" onClick={() => shuffleAndPlay(playlistTracks, activePlaylist.name)} disabled={playlistTracks.length === 0}>Shuffle Playlist</button>}{view === "playlist" && activePlaylist && <button className="delete-playlist-button" onClick={() => setPlaylistToDelete({ id: activePlaylist.id, name: activePlaylist.name })}>Delete Playlist</button>}</div></div>{trackRows((view === "playlist" ? playlistTracks : allTracks).filter((track) => `${track.title} ${track.artist} ${track.album} ${(track.genres ?? []).join(" ")}`.toLowerCase().includes(query.toLowerCase())), view === "playlist")}</section>}
         {view === "queue" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">RUNNING ORDER</p><h1>Up Next</h1></div><span>{queue.length} {queue.length === 1 ? "track" : "tracks"}</span></div>{queue.length ? trackRows(queue, false, true) : <div className="queue-empty"><span>☷</span><h2>Your queue is empty</h2><p>Use the ••• action button on any track, then choose Play Next or Add to Queue.</p></div>}</section>}
       </>}
     </main>

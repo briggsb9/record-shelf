@@ -1,6 +1,6 @@
 export type Track = {
   id: number; albumId: string; path: string; title: string; artist: string; album: string; albumArtist: string;
-  trackNumber: number; discNumber: number; duration: number; year: number | null;
+  trackNumber: number; discNumber: number; duration: number; year: number | null; genres: string[];
 };
 export type Album = { id: string; title: string; artist: string; year: number | null; artworkUrl: string | null; artworkSource: "embedded" | "folder" | "musicbrainz" | null; tracks: Track[] };
 export type Artist = { name: string; imageUrl: string | null; imageSource: "wikimedia" | null };
