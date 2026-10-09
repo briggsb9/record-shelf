@@ -50,6 +50,8 @@ Record Shelf uses embedded artwork first, then common folder images such as `cov
 
 The Artists and Genres screens have explicit **Shuffle** controls, and every playlist has its own **Shuffle Playlist** action. A shuffled collection becomes the visible **Up Next** running order and begins playing immediately. Genres come from the music files' embedded tags; tracks without a genre are grouped under **Unknown Genre**. Desktop libraries created before v0.5.0 reread metadata once on the next rescan to populate the new genre catalogue.
 
+The transport bar also provides shuffle and repeat controls. Repeat cycles through off, repeat all and repeat one. Clicking the now-playing cover, title or artist at the bottom left opens that album directly in the Album detail view.
+
 The Artists view displays cached artist portraits when available and falls back to a representative album cover. **Find Artist Photos** matches artists through MusicBrainz, retrieves freely reusable images from Wikipedia or Wikimedia Commons, and keeps the downloaded portraits in Record Shelf's local artwork cache across restarts. Android currently uses the album-cover fallback for artist cards.
 
 ## Build installers

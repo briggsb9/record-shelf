@@ -4,12 +4,22 @@ import { isNativeAndroid, recordShelf, trackPlaybackUrl } from "./platform";
 
 type View = "albums" | "artists" | "genres" | "songs" | "playlist" | "queue";
 type AlbumLayout = "shelf" | "detail" | "covers" | "list";
+type RepeatMode = "off" | "all" | "one";
 type Notice = { kind: "success" | "error" | "info"; message: string };
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "—";
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+}
+
+function shuffleTracks(tracks: Track[]): Track[] {
+  const shuffled = [...tracks];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const randomIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[index]];
+  }
+  return shuffled;
 }
 
 function Artwork({ album, className = "" }: { album?: Album; className?: string }) {
@@ -56,6 +66,11 @@ export default function App() {
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [queue, setQueue] = useState<Track[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [shuffleEnabled, setShuffleEnabled] = useState(false);
+  const [repeatMode, setRepeatMode] = useState<RepeatMode>(() => {
+    const saved = localStorage.getItem("repeat-mode");
+    return saved === "all" || saved === "one" ? saved : "off";
+  });
   const [elapsed, setElapsed] = useState(0);
   const [volume, setVolume] = useState(0.82);
   const [playlistDialog, setPlaylistDialog] = useState<{ track: Track | null } | null>(null);
@@ -70,6 +85,7 @@ export default function App() {
   const playbackRequestRef = useRef(0);
   const loadedTrackIdRef = useRef<number | null>(null);
   const shouldPlayRef = useRef(false);
+  const repeatModeRef = useRef<RepeatMode>(repeatMode);
   const screenPositionsRef = useRef<Record<string, number>>({});
   const shelfPositionsRef = useRef<Record<string, number>>({});
 
@@ -135,14 +151,39 @@ export default function App() {
       setNotice({ kind: "info", message: `${label} has no songs to shuffle` });
       return;
     }
-    const shuffled = [...tracks];
-    for (let index = shuffled.length - 1; index > 0; index -= 1) {
-      const randomIndex = Math.floor(Math.random() * (index + 1));
-      [shuffled[index], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[index]];
-    }
+    const shuffled = shuffleTracks(tracks);
+    setShuffleEnabled(true);
     playTrack(shuffled[0], shuffled);
     setNotice({ kind: "success", message: `Shuffling ${label} · ${shuffled.length} ${shuffled.length === 1 ? "song" : "songs"}` });
   }, [playTrack]);
+
+  const toggleShuffle = useCallback(() => {
+    const enabled = !shuffleEnabled;
+    setShuffleEnabled(enabled);
+    if (!enabled) {
+      setNotice({ kind: "info", message: "Shuffle off · the current Up Next order is unchanged" });
+      return;
+    }
+    setQueue((current) => {
+      if (current.length > 1) {
+        const currentIndex = currentTrack ? current.findIndex((track) => track.id === currentTrack.id) : -1;
+        if (currentIndex >= 0) return [...current.slice(0, currentIndex + 1), ...shuffleTracks(current.slice(currentIndex + 1))];
+        return shuffleTracks(current);
+      }
+      if (allTracks.length <= 1) return current;
+      const candidates = currentTrack ? allTracks.filter((track) => track.id !== currentTrack.id) : allTracks;
+      return currentTrack ? [currentTrack, ...shuffleTracks(candidates)] : shuffleTracks(candidates);
+    });
+    setNotice({ kind: "success", message: queue.length > 1 ? "Shuffle on · upcoming songs randomized" : "Shuffle on · library added to Up Next" });
+  }, [allTracks, currentTrack, queue.length, shuffleEnabled]);
+
+  const cycleRepeatMode = useCallback(() => {
+    const next: RepeatMode = repeatMode === "off" ? "all" : repeatMode === "all" ? "one" : "off";
+    repeatModeRef.current = next;
+    setRepeatMode(next);
+    localStorage.setItem("repeat-mode", next);
+    setNotice({ kind: "info", message: next === "all" ? "Repeat all on" : next === "one" ? "Repeat one on" : "Repeat off" });
+  }, [repeatMode]);
 
   const togglePlayback = useCallback(() => {
     const audio = audioRef.current;
@@ -165,8 +206,23 @@ export default function App() {
     const index = queue.findIndex((track) => track.id === currentTrack.id);
     const next = queue[index < 0 ? 0 : index + 1];
     if (next) playTrack(next, null);
+    else if (repeatModeRef.current === "all" && queue[0]) playTrack(queue[0], null);
     else shouldPlayRef.current = false;
   }, [currentTrack, playTrack, queue]);
+
+  const handleTrackEnded = useCallback(() => {
+    if (repeatModeRef.current === "one" && currentTrack) {
+      const audio = audioRef.current;
+      audio.currentTime = 0;
+      shouldPlayRef.current = true;
+      void audio.play().catch(() => {
+        shouldPlayRef.current = false;
+        setNotice({ kind: "error", message: "This track could not be repeated because the file is unavailable." });
+      });
+      return;
+    }
+    nextTrack();
+  }, [currentTrack, nextTrack]);
 
   const previousTrack = useCallback(() => {
     const audio = audioRef.current;
@@ -175,6 +231,7 @@ export default function App() {
     const index = queue.findIndex((track) => track.id === currentTrack.id);
     const previous = queue[index > 0 ? index - 1 : -1];
     if (previous) playTrack(previous, null);
+    else if (repeatModeRef.current === "all" && queue.length > 0) playTrack(queue[queue.length - 1], null);
   }, [currentTrack, playTrack, queue]);
 
   const runScan = useCallback(async (root: string) => {
@@ -213,12 +270,12 @@ export default function App() {
     const time = () => setElapsed(audio.currentTime);
     const failed = () => { shouldPlayRef.current = false; setNotice({ kind: "error", message: "Playback stopped because the audio file could not be read." }); };
     audio.addEventListener("play", playing); audio.addEventListener("pause", paused); audio.addEventListener("timeupdate", time);
-    audio.addEventListener("ended", nextTrack); audio.addEventListener("error", failed);
+    audio.addEventListener("ended", handleTrackEnded); audio.addEventListener("error", failed);
     return () => {
       audio.removeEventListener("play", playing); audio.removeEventListener("pause", paused); audio.removeEventListener("timeupdate", time);
-      audio.removeEventListener("ended", nextTrack); audio.removeEventListener("error", failed);
+      audio.removeEventListener("ended", handleTrackEnded); audio.removeEventListener("error", failed);
     };
-  }, [nextTrack]);
+  }, [handleTrackEnded]);
   useEffect(() => { audioRef.current.volume = volume; }, [volume]);
   useEffect(() => recordShelf.onPlayerCommand((command) => {
     if (command === "toggle") togglePlayback();
@@ -266,6 +323,17 @@ export default function App() {
   }, [currentAlbum, currentTrack, nextTrack, previousTrack]);
 
   const showAlbum = (album: Album) => { setSelectedAlbumId(album.id); setView("albums"); setSelectedPlaylistId(null); };
+  const showNowPlayingAlbum = () => {
+    if (!currentAlbum) return;
+    screenPositionsRef.current["albums:detail:all"] = 0;
+    setQuery("");
+    setSelectedArtist(null);
+    setSelectedPlaylistId(null);
+    setExpandedAlbumId(null);
+    setSelectedAlbumId(currentAlbum.id);
+    setAlbumLayout("detail");
+    setView("albums");
+  };
   const showArtist = (artist: string) => {
     const firstAlbum = library.albums.find((album) => album.artist === artist);
     setSelectedArtist(artist);
@@ -438,7 +506,7 @@ export default function App() {
     </aside>
 
     <main ref={mainRef} className={view === "albums" && albumLayout === "shelf" ? "shelf-mode" : ""} onScroll={(event) => { screenPositionsRef.current[screenKey] = event.currentTarget.scrollTop; }}>
-      <header className="topbar"><label className="search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search albums, artists and songs" /><kbd>⌘ L</kbd></label><div className="top-actions"><button className="art-button" onClick={() => void fetchAllMissingArtwork()} disabled={!library.albums.length || artworkBusy !== null}>◇ Find Artwork</button><button className="scan-button" onClick={() => void rescan()} disabled={!!scanProgress}>{scanProgress ? "Scanning…" : library.root ? "Rescan" : "Choose Music Folder"}</button></div></header>
+      <header className="topbar"><label className="search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search albums, artists and songs" /><kbd>⌘ L</kbd></label><div className="top-actions"><span className="app-version" aria-label={`Record Shelf version ${__APP_VERSION__}`}>v{__APP_VERSION__}</span><button className="art-button" onClick={() => void fetchAllMissingArtwork()} disabled={!library.albums.length || artworkBusy !== null}>◇ Find Artwork</button><button className="scan-button" onClick={() => void rescan()} disabled={!!scanProgress}>{scanProgress ? "Scanning…" : library.root ? "Rescan" : "Choose Music Folder"}</button></div></header>
       {scanProgress && <div className="scan-strip"><div style={{ width: scanProgress.total ? `${scanProgress.current / scanProgress.total * 100}%` : "12%" }} /><span>{scanProgress.phase === "discovering" ? "Finding music on your NAS…" : `Reading ${scanProgress.current} of ${scanProgress.total}${scanProgress.file ? ` · ${scanProgress.file}` : ""}`}</span></div>}
       {artworkProgress && <div className="scan-strip artwork-strip"><div style={{ width: artworkProgress.total ? `${artworkProgress.current / artworkProgress.total * 100}%` : "5%" }} /><span>{artworkProgress.status === "searching" ? "Searching" : artworkProgress.status === "found" ? "Found artwork for" : "No match for"} {artworkProgress.album} · {artworkProgress.current}/{artworkProgress.total}</span></div>}
       {notice && <button className={`notice ${notice.kind}`} onClick={() => setNotice(null)}>{notice.message}<span>×</span></button>}
@@ -452,7 +520,7 @@ export default function App() {
       </>}
     </main>
 
-    <footer className="player-bar"><div className="now-playing"><Artwork album={currentAlbum} /><div><b>{currentTrack?.title ?? "Nothing playing"}</b><span>{currentTrack?.artist ?? "Choose a record"}</span></div></div><div className="transport"><div><button onClick={previousTrack} aria-label="Previous track">◀</button><button className="play" onClick={togglePlayback} aria-label={isPlaying ? "Pause" : "Play"}>{isPlaying ? "❚❚" : "▶"}</button><button onClick={nextTrack} aria-label="Next track">▶</button></div><div className="timeline"><time>{formatTime(elapsed)}</time><input aria-label="Track position" type="range" min="0" max={currentTrack?.duration || 1} value={Math.min(elapsed, currentTrack?.duration || 1)} onChange={(event) => { audioRef.current.currentTime = Number(event.target.value); setElapsed(Number(event.target.value)); }} /><time>-{formatTime(Math.max(0, (currentTrack?.duration ?? 0) - elapsed))}</time></div></div><div className="volume"><span>◖</span><input aria-label="Volume" type="range" min="0" max="1" step="0.01" value={volume} onChange={(event) => setVolume(Number(event.target.value))} /><span>◗</span></div></footer>
+    <footer className="player-bar"><button className="now-playing" onClick={showNowPlayingAlbum} disabled={!currentAlbum} aria-label={currentAlbum ? `Open ${currentAlbum.title} by ${currentAlbum.artist}` : "Nothing playing"} title={currentAlbum ? "Open this album" : undefined}><Artwork album={currentAlbum} /><div><b>{currentTrack?.title ?? "Nothing playing"}</b><span>{currentTrack?.artist ?? "Choose a record"}</span></div></button><div className="transport"><div className="transport-controls"><button className={`transport-mode ${shuffleEnabled ? "active" : ""}`} onClick={toggleShuffle} disabled={allTracks.length === 0} aria-label={shuffleEnabled ? "Turn shuffle off" : "Turn shuffle on"} aria-pressed={shuffleEnabled} title={shuffleEnabled ? "Shuffle on" : "Shuffle off"}><span aria-hidden="true">⇄</span></button><button onClick={previousTrack} aria-label="Previous track" title="Previous">◀</button><button className="play" onClick={togglePlayback} aria-label={isPlaying ? "Pause" : "Play"}>{isPlaying ? "❚❚" : "▶"}</button><button onClick={nextTrack} aria-label="Next track" title="Next">▶</button><button className={`transport-mode repeat ${repeatMode !== "off" ? "active" : ""}`} onClick={cycleRepeatMode} aria-label={repeatMode === "off" ? "Repeat off. Turn on repeat all" : repeatMode === "all" ? "Repeat all. Turn on repeat one" : "Repeat one. Turn repeat off"} title={repeatMode === "off" ? "Repeat off" : repeatMode === "all" ? "Repeat all" : "Repeat one"}><span aria-hidden="true">↻</span>{repeatMode === "one" && <small aria-hidden="true">1</small>}</button></div><div className="timeline"><time>{formatTime(elapsed)}</time><input aria-label="Track position" type="range" min="0" max={currentTrack?.duration || 1} value={Math.min(elapsed, currentTrack?.duration || 1)} onChange={(event) => { audioRef.current.currentTime = Number(event.target.value); setElapsed(Number(event.target.value)); }} /><time>-{formatTime(Math.max(0, (currentTrack?.duration ?? 0) - elapsed))}</time></div></div><div className="volume"><span>◖</span><input aria-label="Volume" type="range" min="0" max="1" step="0.01" value={volume} onChange={(event) => setVolume(Number(event.target.value))} /><span>◗</span></div></footer>
 
     {trackMenu && <div className="track-context-menu" role="menu" style={{ left: trackMenu.x, top: trackMenu.y }} onClick={(event) => event.stopPropagation()}><div><b>{trackMenu.track.title}</b><span>{trackMenu.track.artist}</span></div><button role="menuitem" onClick={() => { playNext(trackMenu.track); setTrackMenu(null); }}>▶ Play Next</button><button role="menuitem" onClick={() => { addToQueue(trackMenu.track); setTrackMenu(null); }}>＋ Add to Queue</button><button role="menuitem" onClick={() => { openPlaylistDialog(trackMenu.track); setTrackMenu(null); }}>♫ Add to Playlist…</button></div>}
 
