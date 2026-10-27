@@ -1,4 +1,4 @@
-name: Android tagged release
+name: Multiplatform tagged release
 
 on:
   push:
@@ -9,42 +9,93 @@ permissions:
   contents: write
 
 jobs:
-  release-apk:
+  android:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
         uses: actions/checkout@v5
-
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
-
       - name: Set up Java
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 21
           cache: gradle
-
       - name: Install Android platform
         run: "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager \"platforms;android-36\" \"build-tools;36.0.0\""
-
       - name: Install dependencies
         run: npm ci
+      - name: Build and test Android APK
+        run: npm run android:apk
+      - name: Name Android package
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk "Record-Shelf-${GITHUB_REF_NAME}-Android.apk"
+      - name: Upload Android package
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-package
+          path: Record-Shelf-*-Android.apk
+          if-no-files-found: error
 
-      - name: Build web app and sync Android
-        run: npm run android:sync
+  macos:
+    runs-on: macos-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build macOS packages
+        run: npm run build && npx electron-builder --mac --x64 --arm64
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-packages
+          path: |
+            release/*.dmg
+            release/*-mac.zip
+          if-no-files-found: error
 
-      - name: Build debug APK
-        working-directory: android
-        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build Windows installer
+        run: npm run package:win
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-package
+          path: release/*.exe
+          if-no-files-found: error
 
-      - name: Name release APK
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk "Record-Shelf-${GITHUB_REF_NAME}-Android-debug.apk"
-
-      - name: Create GitHub prerelease
+  publish:
+    needs: [android, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v7
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Publish GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "Record-Shelf-${GITHUB_REF_NAME}-Android-debug.apk" --title "Record Shelf ${GITHUB_REF_NAME}" --generate-notes --prerelease
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --repo "$GITHUB_REPOSITORY" --title "Record Shelf $GITHUB_REF_NAME" --generate-notes --prerelease

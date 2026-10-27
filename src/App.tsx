@@ -65,6 +65,7 @@ export default function App() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [queue, setQueue] = useState<Track[]>([]);
+  const [queueIndex, setQueueIndex] = useState(-1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [shuffleEnabled, setShuffleEnabled] = useState(false);
   const [repeatMode, setRepeatMode] = useState<RepeatMode>(() => {
@@ -92,6 +93,7 @@ export default function App() {
   const loadedTrackIdRef = useRef<number | null>(null);
   const shouldPlayRef = useRef(false);
   const repeatModeRef = useRef<RepeatMode>(repeatMode);
+  const queueIndexRef = useRef(-1);
   const screenPositionsRef = useRef<Record<string, number>>({});
   const shelfPositionsRef = useRef<Record<string, number>>({});
 
@@ -132,13 +134,21 @@ export default function App() {
     localStorage.setItem("album-layout", layout);
   };
 
-  const playTrack = useCallback((track: Track, newQueue: Track[] | null = [track]) => {
+  const playTrack = useCallback((track: Track, newQueue: Track[] | null = [track], targetQueueIndex?: number) => {
     const audio = audioRef.current;
     const requestId = ++playbackRequestRef.current;
     shouldPlayRef.current = true;
     loadedTrackIdRef.current = null;
     audio.pause();
-    if (newQueue !== null) setQueue(newQueue);
+    let nextQueueIndex = targetQueueIndex;
+    if (newQueue !== null) {
+      setQueue(newQueue);
+      if (nextQueueIndex === undefined) nextQueueIndex = newQueue.findIndex((item) => item === track || item.id === track.id);
+    }
+    if (nextQueueIndex !== undefined) {
+      queueIndexRef.current = nextQueueIndex;
+      setQueueIndex(nextQueueIndex);
+    }
     setCurrentTrack(track);
     setElapsed(0);
     void trackPlaybackUrl(track).then((url) => {
@@ -170,18 +180,24 @@ export default function App() {
       setNotice({ kind: "info", message: "Shuffle off · the current Up Next order is unchanged" });
       return;
     }
-    setQueue((current) => {
-      if (current.length > 1) {
-        const currentIndex = currentTrack ? current.findIndex((track) => track.id === currentTrack.id) : -1;
-        if (currentIndex >= 0) return [...current.slice(0, currentIndex + 1), ...shuffleTracks(current.slice(currentIndex + 1))];
-        return shuffleTracks(current);
-      }
-      if (allTracks.length <= 1) return current;
+    let nextQueue = queue;
+    let nextIndex = queueIndexRef.current;
+    if (queue.length > 1) {
+      const currentIndex = currentTrack && queue[queueIndexRef.current]?.id === currentTrack.id
+        ? queueIndexRef.current
+        : currentTrack ? queue.findIndex((track) => track.id === currentTrack.id) : -1;
+      if (currentIndex >= 0) nextQueue = [...queue.slice(0, currentIndex + 1), ...shuffleTracks(queue.slice(currentIndex + 1))];
+      else { nextQueue = shuffleTracks(queue); nextIndex = -1; }
+    } else if (allTracks.length > 1) {
       const candidates = currentTrack ? allTracks.filter((track) => track.id !== currentTrack.id) : allTracks;
-      return currentTrack ? [currentTrack, ...shuffleTracks(candidates)] : shuffleTracks(candidates);
-    });
+      nextQueue = currentTrack ? [currentTrack, ...shuffleTracks(candidates)] : shuffleTracks(candidates);
+      nextIndex = currentTrack ? 0 : -1;
+    }
+    queueIndexRef.current = nextIndex;
+    setQueueIndex(nextIndex);
+    setQueue(nextQueue);
     setNotice({ kind: "success", message: queue.length > 1 ? "Shuffle on · upcoming songs randomized" : "Shuffle on · library added to Up Next" });
-  }, [allTracks, currentTrack, queue.length, shuffleEnabled]);
+  }, [allTracks, currentTrack, queue, shuffleEnabled]);
 
   const cycleRepeatMode = useCallback(() => {
     const next: RepeatMode = repeatMode === "off" ? "all" : repeatMode === "all" ? "one" : "off";
@@ -195,7 +211,7 @@ export default function App() {
     const audio = audioRef.current;
     if (!currentTrack) {
       const first = queue[0] ?? selectedAlbum?.tracks[0] ?? allTracks[0];
-      if (first) playTrack(first, queue.length ? null : [first]);
+      if (first) playTrack(first, queue.length ? null : [first], 0);
       return;
     }
     if (audio.paused) {
@@ -209,11 +225,16 @@ export default function App() {
 
   const nextTrack = useCallback(() => {
     if (!currentTrack || queue.length === 0) return;
-    const index = queue.findIndex((track) => track.id === currentTrack.id);
+    const index = queue[queueIndexRef.current]?.id === currentTrack.id ? queueIndexRef.current : queue.findIndex((track) => track.id === currentTrack.id);
     const next = queue[index < 0 ? 0 : index + 1];
-    if (next) playTrack(next, null);
-    else if (repeatModeRef.current === "all" && queue[0]) playTrack(queue[0], null);
-    else shouldPlayRef.current = false;
+    const nextIndex = index < 0 ? 0 : index + 1;
+    if (next) playTrack(next, null, nextIndex);
+    else if (repeatModeRef.current === "all" && queue[0]) playTrack(queue[0], null, 0);
+    else {
+      shouldPlayRef.current = false;
+      audioRef.current.pause();
+      setIsPlaying(false);
+    }
   }, [currentTrack, playTrack, queue]);
 
   const handleTrackEnded = useCallback(() => {
@@ -234,10 +255,10 @@ export default function App() {
     const audio = audioRef.current;
     if (audio.currentTime > 3) { audio.currentTime = 0; return; }
     if (!currentTrack || queue.length === 0) return;
-    const index = queue.findIndex((track) => track.id === currentTrack.id);
+    const index = queue[queueIndexRef.current]?.id === currentTrack.id ? queueIndexRef.current : queue.findIndex((track) => track.id === currentTrack.id);
     const previous = queue[index > 0 ? index - 1 : -1];
-    if (previous) playTrack(previous, null);
-    else if (repeatModeRef.current === "all" && queue.length > 0) playTrack(queue[queue.length - 1], null);
+    if (previous) playTrack(previous, null, index - 1);
+    else if (repeatModeRef.current === "all" && queue.length > 0) playTrack(queue[queue.length - 1], null, queue.length - 1);
   }, [currentTrack, playTrack, queue]);
 
   const runScan = useCallback(async (root: string) => {
@@ -263,7 +284,7 @@ export default function App() {
     if (isNativeAndroid) { void chooseAndScan(); return; }
     try {
       const settings = await recordShelf.getNasSettings();
-      setNasForm({ server: settings.server, share: settings.share, subfolder: settings.subfolder, username: settings.username, password: "", autoConnect: settings.autoConnect });
+      setNasForm({ server: settings.server, share: settings.share, subfolder: settings.subfolder, username: settings.username, password: "", clearPassword: false, autoConnect: settings.autoConnect });
       setNasHasPassword(settings.hasPassword);
       setNasFeedback(null);
       setNasDialog(true);
@@ -336,7 +357,7 @@ export default function App() {
     const playing = () => setIsPlaying(true);
     const paused = () => setIsPlaying(false);
     const time = () => setElapsed(audio.currentTime);
-    const failed = () => { shouldPlayRef.current = false; setNotice({ kind: "error", message: "Playback stopped because the audio file could not be read." }); };
+    const failed = () => { shouldPlayRef.current = false; loadedTrackIdRef.current = null; setIsPlaying(false); setNotice({ kind: "error", message: "Playback stopped because the audio file could not be read." }); };
     audio.addEventListener("play", playing); audio.addEventListener("pause", paused); audio.addEventListener("timeupdate", time);
     audio.addEventListener("ended", handleTrackEnded); audio.addEventListener("error", failed);
     return () => {
@@ -384,8 +405,8 @@ export default function App() {
   useEffect(() => {
     if (!currentTrack || !("mediaSession" in navigator)) return;
     navigator.mediaSession.metadata = new MediaMetadata({ title: currentTrack.title, artist: currentTrack.artist, album: currentTrack.album, artwork: currentAlbum?.artworkUrl ? [{ src: currentAlbum.artworkUrl }] : [] });
-    navigator.mediaSession.setActionHandler("play", () => void audioRef.current.play());
-    navigator.mediaSession.setActionHandler("pause", () => audioRef.current.pause());
+    navigator.mediaSession.setActionHandler("play", () => { shouldPlayRef.current = true; void audioRef.current.play().catch(() => { shouldPlayRef.current = false; setIsPlaying(false); }); });
+    navigator.mediaSession.setActionHandler("pause", () => { shouldPlayRef.current = false; audioRef.current.pause(); });
     navigator.mediaSession.setActionHandler("nexttrack", nextTrack);
     navigator.mediaSession.setActionHandler("previoustrack", previousTrack);
   }, [currentAlbum, currentTrack, nextTrack, previousTrack]);
@@ -462,10 +483,20 @@ export default function App() {
   };
   const choosePlaylist = async (playlistId: string) => {
     if (!playlistDialog?.track) return;
-    setLibrary(await recordShelf.addToPlaylist(playlistId, playlistDialog.track.id)); setPlaylistDialog(null);
+    try {
+      setLibrary(await recordShelf.addToPlaylist(playlistId, playlistDialog.track.id));
+      setPlaylistDialog(null);
+    } catch {
+      setNotice({ kind: "error", message: "The track could not be added to that playlist." });
+    }
   };
   const removeFromPlaylist = async (trackId: number) => {
-    if (activePlaylist) setLibrary(await recordShelf.removeFromPlaylist(activePlaylist.id, trackId));
+    if (!activePlaylist) return;
+    try {
+      setLibrary(await recordShelf.removeFromPlaylist(activePlaylist.id, trackId));
+    } catch {
+      setNotice({ kind: "error", message: "The track could not be removed from this playlist." });
+    }
   };
   const deletePlaylist = async () => {
     if (!playlistToDelete) return;
@@ -483,9 +514,13 @@ export default function App() {
   };
 
   const playNext = (track: Track) => {
+    const shouldPrependCurrent = !!currentTrack && !queue.some((item) => item.id === currentTrack.id);
+    if (shouldPrependCurrent) { queueIndexRef.current = 0; setQueueIndex(0); }
     setQueue((current) => {
       if (!currentTrack) return [track, ...current];
-      const currentIndex = current.findIndex((item) => item.id === currentTrack.id);
+      const currentIndex = current[queueIndexRef.current]?.id === currentTrack.id
+        ? queueIndexRef.current
+        : current.findIndex((item) => item.id === currentTrack.id);
       if (currentIndex < 0) return [currentTrack, track, ...current];
       const next = [...current];
       next.splice(currentIndex + 1, 0, track);
@@ -495,11 +530,15 @@ export default function App() {
   };
 
   const addToQueue = (track: Track) => {
-    setQueue((current) => currentTrack && !current.some((item) => item.id === currentTrack.id) ? [currentTrack, ...current, track] : [...current, track]);
+    const shouldPrependCurrent = !!currentTrack && !queue.some((item) => item.id === currentTrack.id);
+    if (shouldPrependCurrent) { queueIndexRef.current = 0; setQueueIndex(0); }
+    setQueue(shouldPrependCurrent && currentTrack ? [currentTrack, ...queue, track] : [...queue, track]);
     setNotice({ kind: "success", message: `“${track.title}” added to Up Next` });
   };
 
   const addAlbumToQueue = (album: Album) => {
+    const shouldPrependCurrent = !!currentTrack && !queue.some((track) => track.id === currentTrack.id);
+    if (shouldPrependCurrent) { queueIndexRef.current = 0; setQueueIndex(0); }
     setQueue((current) => {
       const runningOrder = currentTrack && !current.some((track) => track.id === currentTrack.id) ? [currentTrack, ...current] : current;
       const tracksToAdd = currentTrack ? album.tracks.filter((track) => track.id !== currentTrack.id) : album.tracks;
@@ -518,20 +557,20 @@ export default function App() {
   };
 
   const trackRows = (tracks: Track[], playlistMode = false, preserveQueue = false) => <div className="track-list">
-    {tracks.map((track, index) => <div key={`${track.id}-${index}`} className={currentTrack?.id === track.id ? "track active" : "track"} onDoubleClick={() => playTrack(track, preserveQueue ? null : [track])}>
-      <button className="track-play" onClick={() => playTrack(track, preserveQueue ? null : [track])} aria-label={`Play ${track.title}`}>{currentTrack?.id === track.id && isPlaying ? "❚❚" : track.trackNumber || index + 1}</button>
+    {tracks.map((track, index) => { const isCurrent = preserveQueue ? queueIndex === index : currentTrack?.id === track.id; return <div key={`${track.id}-${index}`} className={isCurrent ? "track active" : "track"} onDoubleClick={() => playTrack(track, preserveQueue ? null : [track], preserveQueue ? index : 0)}>
+      <button className="track-play" onClick={() => isCurrent ? togglePlayback() : playTrack(track, preserveQueue ? null : [track], preserveQueue ? index : 0)} aria-label={isCurrent && isPlaying ? `Pause ${track.title}` : `Play ${track.title}`}>{isCurrent && isPlaying ? "❚❚" : track.trackNumber || index + 1}</button>
       <div className="track-name"><b>{track.title}</b><span>{track.artist}</span></div>
       <span className="track-album">{track.album}</span>
       <button className="track-actions" title={`Actions for ${track.title}`} aria-label={`Actions for ${track.title}`} aria-haspopup="menu" onClick={(event) => { event.stopPropagation(); openTrackMenu(track, event.currentTarget); }}>•••</button>
       <time>{formatTime(track.duration)}</time>
       {playlistMode && <button className="remove-track" title="Remove from playlist" aria-label={`Remove ${track.title} from playlist`} onClick={() => void removeFromPlaylist(track.id)}>−</button>}
-    </div>)}
+    </div>; })}
   </div>;
 
   const albumActions = selectedAlbum && <div className="album-actions">
     <button className="primary" onClick={() => selectedAlbum.tracks[0] && playTrack(selectedAlbum.tracks[0], [selectedAlbum.tracks[0]])}>▶ Play</button>
     <button onClick={() => addAlbumToQueue(selectedAlbum)}>＋ Queue</button>
-    <button onClick={() => void fetchArtwork(selectedAlbum)} disabled={artworkBusy !== null}>{artworkBusy === selectedAlbum.id ? "Searching…" : selectedAlbum.artworkUrl ? "↻ Find another cover" : "◇ Find cover online"}</button>
+    {!isNativeAndroid && <button onClick={() => void fetchArtwork(selectedAlbum)} disabled={artworkBusy !== null}>{artworkBusy === selectedAlbum.id ? "Searching…" : selectedAlbum.artworkUrl ? "↻ Find another cover" : "◇ Find cover online"}</button>}
   </div>;
 
   const albumView = selectedAlbum && <>
@@ -574,7 +613,7 @@ export default function App() {
     </aside>
 
     <main ref={mainRef} className={view === "albums" && albumLayout === "shelf" ? "shelf-mode" : ""} onScroll={(event) => { screenPositionsRef.current[screenKey] = event.currentTarget.scrollTop; }}>
-      <header className="topbar"><label className="search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search albums, artists and songs" /><kbd>⌘ L</kbd></label><div className="top-actions"><span className="app-version mobile-version" aria-label={`Record Shelf version ${__APP_VERSION__}`}>v{__APP_VERSION__}</span><button className="settings-button" onClick={() => void openNasSettings()} title="Music source settings">⚙</button><button className="art-button" onClick={() => void fetchAllMissingArtwork()} disabled={!library.albums.length || artworkBusy !== null}>◇ Find Artwork</button><button className="scan-button" onClick={() => void rescan()} disabled={!!scanProgress}>{scanProgress ? "Scanning…" : library.root ? "Rescan" : "Choose Music Folder"}</button></div></header>
+      <header className="topbar"><label className="search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search albums, artists and songs" /><kbd>⌘ L</kbd></label><div className="top-actions"><span className="app-version mobile-version" aria-label={`Record Shelf version ${__APP_VERSION__}`}>v{__APP_VERSION__}</span><button className="settings-button" onClick={() => void openNasSettings()} title="Music source settings">⚙</button>{!isNativeAndroid && <button className="art-button" onClick={() => void fetchAllMissingArtwork()} disabled={!library.albums.length || artworkBusy !== null}>◇ Find Artwork</button>}<button className="scan-button" onClick={() => void rescan()} disabled={!!scanProgress}>{scanProgress ? "Scanning…" : library.root ? "Rescan" : "Choose Music Folder"}</button></div></header>
       {scanProgress && <div className="scan-strip"><div style={{ width: scanProgress.total ? `${scanProgress.current / scanProgress.total * 100}%` : "12%" }} /><span>{scanProgress.phase === "discovering" ? "Finding music on your NAS…" : `Reading ${scanProgress.current} of ${scanProgress.total}${scanProgress.file ? ` · ${scanProgress.file}` : ""}`}</span></div>}
       {artworkProgress && <div className="scan-strip artwork-strip"><div style={{ width: artworkProgress.total ? `${artworkProgress.current / artworkProgress.total * 100}%` : "5%" }} /><span>{artworkProgress.status === "searching" ? "Searching" : artworkProgress.status === "found" ? "Found artwork for" : "No match for"} {artworkProgress.album} · {artworkProgress.current}/{artworkProgress.total}</span></div>}
       {notice && <button className={`notice ${notice.kind}`} onClick={() => setNotice(null)}>{notice.message}<span>×</span></button>}
@@ -594,6 +633,6 @@ export default function App() {
 
     {playlistDialog && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPlaylistDialog(null); }}><div className="playlist-dialog" role="dialog" aria-modal="true" aria-label="Playlist chooser"><button className="modal-close" onClick={() => setPlaylistDialog(null)}>×</button><p className="eyebrow">PLAYLISTS</p><h2>{playlistDialog.track ? "Add to a playlist" : "New playlist"}</h2>{playlistDialog.track && <p className="dialog-track">“{playlistDialog.track.title}” by {playlistDialog.track.artist}</p>}{playlistDialog.track && library.playlists.length > 0 && <div className="playlist-choices">{library.playlists.map((playlist) => <button key={playlist.id} onClick={() => void choosePlaylist(playlist.id)}><span>♫</span><b>{playlist.name}</b><small>{playlist.trackIds.length} songs</small></button>)}</div>}{playlistDialog.track && library.playlists.length > 0 && <div className="or"><span>or create another</span></div>}<form onSubmit={(event) => { event.preventDefault(); void createPlaylist(); }}><input autoFocus value={newPlaylistName} onChange={(event) => setNewPlaylistName(event.target.value)} placeholder="Playlist name" /><button type="submit" disabled={!newPlaylistName.trim()}>{playlistDialog.track ? "Create & Add" : "Create Playlist"}</button></form></div></div>}
     {playlistToDelete && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPlaylistToDelete(null); }}><div className="playlist-dialog confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-playlist-title"><button className="modal-close" onClick={() => setPlaylistToDelete(null)}>×</button><p className="eyebrow">DELETE PLAYLIST</p><h2 id="delete-playlist-title">Delete “{playlistToDelete.name}”?</h2><p className="confirm-copy">This removes the playlist only. Your music files and albums will not be changed.</p><div className="confirm-actions"><button onClick={() => setPlaylistToDelete(null)}>Cancel</button><button className="danger" onClick={() => void deletePlaylist()}>Delete Playlist</button></div></div></div>}
-    {nasDialog && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !nasSaving) setNasDialog(false); }}><div className="playlist-dialog nas-dialog" role="dialog" aria-modal="true" aria-labelledby="nas-settings-title"><button className="modal-close" onClick={() => setNasDialog(false)} disabled={nasSaving}>×</button><p className="eyebrow">MUSIC SOURCE</p><h2 id="nas-settings-title">Connect your NAS</h2><p className="nas-help">Enter the share once. Record Shelf will reconnect it at startup and after your computer wakes.</p><div className="nas-fields"><label><span>NAS address</span><input autoFocus value={nasForm.server} onChange={(event) => { setNasFeedback(null); setNasForm((current) => ({ ...current, server: event.target.value })); }} placeholder="nas.local or 192.168.1.20" /></label><label><span>Share name</span><input value={nasForm.share} onChange={(event) => { setNasFeedback(null); setNasForm((current) => ({ ...current, share: event.target.value })); }} placeholder="Music" /></label><label><span>Music subfolder <small>optional</small></span><input value={nasForm.subfolder} onChange={(event) => { setNasFeedback(null); setNasForm((current) => ({ ...current, subfolder: event.target.value })); }} placeholder="Library" /></label><label><span>Username</span><input value={nasForm.username} onChange={(event) => { setNasFeedback(null); setNasForm((current) => ({ ...current, username: event.target.value })); }} autoComplete="username" /></label><label><span>Password {nasHasPassword && <small>saved securely—leave blank to keep it</small>}</span><input type="password" value={nasForm.password ?? ""} onChange={(event) => { setNasFeedback(null); setNasForm((current) => ({ ...current, password: event.target.value })); }} autoComplete="current-password" placeholder={nasHasPassword ? "••••••••" : "NAS password"} /></label><label className="nas-toggle"><input type="checkbox" checked={nasForm.autoConnect} onChange={(event) => { setNasFeedback(null); setNasForm((current) => ({ ...current, autoConnect: event.target.checked })); }} /><span>Connect automatically</span></label></div>{nasFeedback && <div className={`nas-feedback ${nasFeedback.kind}`} role={nasFeedback.kind === "error" ? "alert" : "status"}><span className="nas-feedback-icon" aria-hidden="true">{nasFeedback.kind === "testing" ? "◌" : nasFeedback.kind === "success" ? "✓" : "!"}</span><div><b>{nasFeedback.title}</b><p>{nasFeedback.message}</p></div></div>}<p className="credential-note">Your password is protected by macOS Keychain or Windows account encryption. It is never stored in the music catalogue.</p><div className="confirm-actions"><button onClick={() => void useLocalFolder()} disabled={nasSaving}>Use Local Folder</button>{nasFeedback?.kind === "success" && <button onClick={() => setNasDialog(false)}>Done</button>}<button className="primary" onClick={() => void saveNasSettings()} disabled={nasSaving || !nasForm.server.trim() || !nasForm.share.trim()}>{nasSaving ? "Testing…" : nasFeedback?.kind === "success" ? "Test Again" : "Save & Test Connection"}</button></div></div></div>}
+    {nasDialog && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !nasSaving) setNasDialog(false); }}><div className="playlist-dialog nas-dialog" role="dialog" aria-modal="true" aria-labelledby="nas-settings-title"><button className="modal-close" onClick={() => setNasDialog(false)} disabled={nasSaving}>×</button><p className="eyebrow">MUSIC SOURCE</p><h2 id="nas-settings-title">Connect your NAS</h2><p className="nas-help">Enter the share once. Record Shelf will reconnect it at startup and after your computer wakes.</p><div className="nas-fields"><label><span>NAS address</span><input autoFocus value={nasForm.server} onChange={(event) => { setNasFeedback(null); setNasForm((current) => ({ ...current, server: event.target.value })); }} placeholder="nas.local or 192.168.1.20" /></label><label><span>Share name</span><input value={nasForm.share} onChange={(event) => { setNasFeedback(null); setNasForm((current) => ({ ...current, share: event.target.value })); }} placeholder="Music" /></label><label><span>Music subfolder <small>optional</small></span><input value={nasForm.subfolder} onChange={(event) => { setNasFeedback(null); setNasForm((current) => ({ ...current, subfolder: event.target.value })); }} placeholder="Library" /></label><label><span>Username</span><input value={nasForm.username} onChange={(event) => { setNasFeedback(null); setNasForm((current) => ({ ...current, username: event.target.value })); }} autoComplete="username" /></label><label><span>Password {nasHasPassword && <small>saved securely—leave blank to keep it</small>}</span><input type="password" value={nasForm.password ?? ""} disabled={nasForm.clearPassword} onChange={(event) => { setNasFeedback(null); setNasForm((current) => ({ ...current, password: event.target.value, clearPassword: false })); }} autoComplete="current-password" placeholder={nasHasPassword ? "••••••••" : "NAS password"} /></label>{nasHasPassword && <label className="nas-toggle nas-forget-password"><input type="checkbox" checked={!!nasForm.clearPassword} onChange={(event) => { setNasFeedback(null); setNasForm((current) => ({ ...current, password: "", clearPassword: event.target.checked })); }} /><span>Forget saved password and connect without one</span></label>}<label className="nas-toggle"><input type="checkbox" checked={nasForm.autoConnect} onChange={(event) => { setNasFeedback(null); setNasForm((current) => ({ ...current, autoConnect: event.target.checked })); }} /><span>Connect automatically</span></label></div>{nasFeedback && <div className={`nas-feedback ${nasFeedback.kind}`} role={nasFeedback.kind === "error" ? "alert" : "status"}><span className="nas-feedback-icon" aria-hidden="true">{nasFeedback.kind === "testing" ? "◌" : nasFeedback.kind === "success" ? "✓" : "!"}</span><div><b>{nasFeedback.title}</b><p>{nasFeedback.message}</p></div></div>}<p className="credential-note">Your password is protected by macOS Keychain or Windows account encryption. It is never stored in the music catalogue.</p><div className="confirm-actions"><button onClick={() => void useLocalFolder()} disabled={nasSaving}>Use Local Folder</button>{nasFeedback?.kind === "success" && <button onClick={() => setNasDialog(false)}>Done</button>}<button className="primary" onClick={() => void saveNasSettings()} disabled={nasSaving || !nasForm.server.trim() || !nasForm.share.trim()}>{nasSaving ? "Testing…" : nasFeedback?.kind === "success" ? "Test Again" : "Save & Test Connection"}</button></div></div></div>}
   </div>;
 }

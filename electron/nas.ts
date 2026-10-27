@@ -12,7 +12,7 @@ export type NasSettings = {
   hasPassword: boolean;
 };
 
-export type NasSettingsInput = Omit<NasSettings, "hasPassword"> & { password?: string };
+export type NasSettingsInput = Omit<NasSettings, "hasPassword"> & { password?: string; clearPassword?: boolean };
 export type ConnectionStatus = { state: "local" | "connecting" | "connected" | "offline"; message: string; root: string | null };
 
 const defaults: NasSettings = { server: "", share: "", subfolder: "", username: "", autoConnect: true, hasPassword: false };
@@ -63,7 +63,7 @@ export class NasConnectionManager {
       username: input.username.trim(), autoConnect: input.autoConnect, hasPassword: current.hasPassword,
     };
     await mkdir(path.dirname(this.settingsPath), { recursive: true });
-    if (!server && !share) {
+    if ((!server && !share) || input.clearPassword) {
       await rm(this.passwordPath, { force: true });
       settings.hasPassword = false;
     }
@@ -122,7 +122,10 @@ export class NasConnectionManager {
         const root = settings.subfolder ? `${shareRoot}\\${settings.subfolder.replace(/\//g, "\\")}` : shareRoot;
         if (!(await existsDirectory(root))) {
           const password = await this.password();
-          const script = `$remote=${powershellString(shareRoot)}\n$user=${powershellString(settings.username)}\n$pass=${powershellString(password)}\nNew-SmbMapping -RemotePath $remote -UserName $user -Password $pass -Persistent $true -ErrorAction Stop | Out-Null\n`;
+          const credentialArguments = settings.username || password
+            ? ` -UserName ${powershellString(settings.username)} -Password ${powershellString(password)}`
+            : "";
+          const script = `$remote=${powershellString(shareRoot)}\nNew-SmbMapping -RemotePath $remote${credentialArguments} -Persistent $true -ErrorAction Stop | Out-Null\n`;
           await runWithStdin("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "-"], script);
         }
         if (!(await existsDirectory(root))) throw new Error("The NAS connected but its music folder was not found");

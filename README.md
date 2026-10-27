@@ -7,17 +7,17 @@ Record Shelf is an open-source, album-first music player for libraries stored lo
 
 ![Record Shelf showing the album shelf, selected album and track list](docs/assets/record-shelf-main.png)
 
-The project currently targets:
+The project targets:
 
 - **macOS:** primary desktop development and testing platform.
 - **Android:** phone and tablet test builds distributed as debug APKs.
-- **Windows:** shared Electron application and packaging configuration are present; broader platform QA is still pending.
+- **Windows:** Electron desktop build with local-folder, UNC-share and automatic SMB reconnection support.
 
 Record Shelf is under active development. Back up important playlists and catalogue data before testing a new release.
 
 ## Download a test build
 
-The [GitHub releases page](https://github.com/briggsb9/record-shelf/releases) includes an Android debug APK for each completed tagged build. macOS and Windows users currently build from source using the instructions below; the locally produced desktop packages are not code-signed for public distribution.
+The [GitHub releases page](https://github.com/briggsb9/record-shelf/releases) includes installable packages for Android, macOS (Apple Silicon and Intel) and Windows for each completed tagged build. These test builds are not code-signed for public distribution, so macOS Gatekeeper or Windows SmartScreen may ask you to confirm that you trust the app.
 
 ## macOS development
 
@@ -32,7 +32,7 @@ The first scan reads tags and artwork sequentially to avoid overwhelming a NAS. 
 
 ## Test the Android app
 
-The Android preview supports phones and tablets with touch-sized controls, responsive album layouts, playlists, artist/genre/playlist shuffle, and the visible **•••** action button for Play Next, Add to Queue and Add to Playlist. It scans through Android's system folder picker, stores its catalogue in private app storage, retains the folder permission across restarts, and caches embedded album art inside the app.
+The Android build supports phones and tablets with touch-sized controls, responsive album layouts, playlists, artist/genre/playlist shuffle, and the visible **•••** action button for Play Next, Add to Queue and Add to Playlist. It scans through Android's system folder picker, stores its catalogue in private app storage, retains the folder permission across restarts, and caches embedded album art inside the app.
 
 To get an APK without installing Android Studio:
 
@@ -77,7 +77,7 @@ The Artists view displays cached artist portraits when available and falls back 
 - Windows: `npm run package:win`
 - Android debug APK: `npm run android:apk`
 
-Windows can use a mapped drive or UNC share. The shared Electron/TypeScript application needs no architectural rewrite for Windows; platform-specific packaging and media-key QA remain separate release work.
+Windows can use a mapped drive or UNC share. Guest shares connect without sending empty credential parameters; authenticated shares use credentials protected by Windows account encryption. Tagged releases automatically build and test the Android package and build both desktop installers on their native GitHub runners.
 
 ## Privacy and network access
 

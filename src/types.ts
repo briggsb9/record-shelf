@@ -10,7 +10,7 @@ export type ScanProgress = { phase: "discovering" | "reading" | "finishing"; cur
 export type ArtworkProgress = { current: number; total: number; album: string; status: "searching" | "found" | "missing" | "error" };
 export type ArtworkResult = { success: boolean; message: string; albumId: string };
 export type NasSettings = { server: string; share: string; subfolder: string; username: string; autoConnect: boolean; hasPassword: boolean };
-export type NasSettingsInput = Omit<NasSettings, "hasPassword"> & { password?: string };
+export type NasSettingsInput = Omit<NasSettings, "hasPassword"> & { password?: string; clearPassword?: boolean };
 export type ConnectionStatus = { state: "local" | "connecting" | "connected" | "offline"; message: string; root: string | null };
 
 declare global {
