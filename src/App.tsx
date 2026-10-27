@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Album, Artist, ArtworkProgress, Library, ScanProgress, Track } from "./types";
+import type { Album, Artist, ArtworkProgress, ConnectionStatus, Library, NasSettingsInput, ScanProgress, Track } from "./types";
 import { isNativeAndroid, recordShelf, trackPlaybackUrl } from "./platform";
 
 type View = "albums" | "artists" | "genres" | "songs" | "playlist" | "queue";
@@ -75,6 +75,11 @@ export default function App() {
   const [volume, setVolume] = useState(0.82);
   const [playlistDialog, setPlaylistDialog] = useState<{ track: Track | null } | null>(null);
   const [playlistToDelete, setPlaylistToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [nasDialog, setNasDialog] = useState(false);
+  const [nasSaving, setNasSaving] = useState(false);
+  const [nasForm, setNasForm] = useState<NasSettingsInput>({ server: "", share: "", subfolder: "", username: "", password: "", autoConnect: true });
+  const [nasHasPassword, setNasHasPassword] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>({ state: "local", message: "Using a local or mounted folder", root: null });
   const [trackMenu, setTrackMenu] = useState<{ track: Track; x: number; y: number } | null>(null);
   const [newPlaylistName, setNewPlaylistName] = useState("");
   const audioRef = useRef(new Audio());
@@ -253,14 +258,66 @@ export default function App() {
   }, [runScan]);
   const rescan = useCallback(async () => library.root ? runScan(library.root) : chooseAndScan(), [chooseAndScan, library.root, runScan]);
 
+  const openNasSettings = useCallback(async () => {
+    if (isNativeAndroid) { void chooseAndScan(); return; }
+    try {
+      const settings = await recordShelf.getNasSettings();
+      setNasForm({ server: settings.server, share: settings.share, subfolder: settings.subfolder, username: settings.username, password: "", autoConnect: settings.autoConnect });
+      setNasHasPassword(settings.hasPassword);
+      setNasDialog(true);
+    } catch (error) {
+      setNotice({ kind: "error", message: error instanceof Error ? error.message : "NAS settings could not be opened." });
+    }
+  }, [chooseAndScan]);
+
+  const saveNasSettings = useCallback(async () => {
+    setNasSaving(true);
+    try {
+      const response = await recordShelf.saveNasSettings(nasForm);
+      setConnectionStatus(response.status);
+      setLibrary(response.library);
+      setNasHasPassword(response.settings.hasPassword);
+      if (response.status.state !== "connected") throw new Error(response.status.message);
+      setNasDialog(false);
+      setNotice({ kind: "success", message: "NAS connected. Record Shelf will reconnect it automatically." });
+      if (response.status.root && response.library.albums.length === 0) await runScan(response.status.root);
+    } catch (error) {
+      setNotice({ kind: "error", message: error instanceof Error ? error.message : "The NAS could not be connected." });
+    } finally { setNasSaving(false); }
+  }, [nasForm, runScan]);
+
+  const retryConnection = useCallback(async () => {
+    setConnectionStatus((current) => ({ ...current, state: "connecting", message: "Connecting to music library…" }));
+    try {
+      const response = await recordShelf.connectNas();
+      setConnectionStatus(response.status);
+      setLibrary(response.library);
+      if (response.status.state !== "connected" && response.status.state !== "local") setNotice({ kind: "error", message: response.status.message });
+    } catch (error) { setNotice({ kind: "error", message: error instanceof Error ? error.message : "The NAS is unavailable." }); }
+  }, []);
+
+  const useLocalFolder = useCallback(async () => {
+    setNasSaving(true);
+    try {
+      const response = await recordShelf.saveNasSettings({ server: "", share: "", subfolder: "", username: "", password: "", autoConnect: false });
+      setConnectionStatus(response.status);
+      setNasDialog(false);
+      await chooseAndScan();
+    } catch (error) {
+      setNotice({ kind: "error", message: error instanceof Error ? error.message : "The local music folder could not be selected." });
+    } finally { setNasSaving(false); }
+  }, [chooseAndScan]);
+
   useEffect(() => {
     void recordShelf.getLibrary()
       .then((snapshot) => { setLibrary(snapshot); setSelectedAlbumId(snapshot.albums[0]?.id ?? null); })
       .catch(() => setNotice({ kind: "error", message: "The saved music catalogue could not be opened." }));
+    void recordShelf.getConnectionStatus().then(setConnectionStatus).catch(() => undefined);
     const removeProgress = recordShelf.onScanProgress(setScanProgress);
     const removeArtworkProgress = recordShelf.onArtworkProgress(setArtworkProgress);
     const removeChoose = recordShelf.onChooseLibrary(() => void chooseAndScan());
-    return () => { removeProgress(); removeArtworkProgress(); removeChoose(); };
+    const removeConnection = recordShelf.onConnectionStatus(setConnectionStatus);
+    return () => { removeProgress(); removeArtworkProgress(); removeChoose(); removeConnection(); };
   }, [chooseAndScan]);
 
   useEffect(() => {
@@ -289,7 +346,7 @@ export default function App() {
       const editing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
       if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "l") { event.preventDefault(); searchRef.current?.focus(); }
       if (event.code === "Space" && !editing) { event.preventDefault(); togglePlayback(); }
-      if (event.key === "Escape") { setPlaylistDialog(null); setPlaylistToDelete(null); setTrackMenu(null); setNotice(null); }
+      if (event.key === "Escape") { setPlaylistDialog(null); setPlaylistToDelete(null); setNasDialog(false); setTrackMenu(null); setNotice(null); }
     };
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
@@ -502,11 +559,11 @@ export default function App() {
         <button className={view === "queue" ? "active" : ""} onClick={() => { setSelectedPlaylistId(null); setView("queue"); }}><span>☷</span>Up Next<small className="queue-count">{queue.length}</small></button>
         {library.playlists.map((playlist) => <button key={playlist.id} className={selectedPlaylistId === playlist.id ? "active" : ""} onClick={() => { setSelectedPlaylistId(playlist.id); setView("playlist"); }}><span>♫</span>{playlist.name}</button>)}
       </nav>
-      <div className="source-status"><span className={library.root ? "status-dot online" : "status-dot"} /><div><b>{library.root ? "Library connected" : "No library"}</b><small>{library.root ? (isNativeAndroid ? "Android music folder" : library.root.split(/[\\/]/).pop()) : isNativeAndroid ? "Choose a music location" : "Choose a NAS folder"}</small></div></div>
+      <button className="source-status" onClick={() => connectionStatus.state === "offline" ? void retryConnection() : void openNasSettings()} title={connectionStatus.state === "offline" ? "Retry NAS connection" : "Music source settings"}><span className={(connectionStatus.state === "connected" || (connectionStatus.state === "local" && !!library.root)) ? "status-dot online" : connectionStatus.state === "connecting" ? "status-dot connecting" : "status-dot"} /><div><b>{connectionStatus.state === "connecting" ? "Connecting…" : connectionStatus.state === "offline" ? "Library offline" : library.root ? "Library connected" : "No library"}</b><small>{connectionStatus.state === "offline" ? "Click to retry" : library.root ? (isNativeAndroid ? "Android music folder" : library.root.split(/[\\/]/).pop()) : isNativeAndroid ? "Choose a music location" : "Set up NAS or choose folder"}</small></div></button>
     </aside>
 
     <main ref={mainRef} className={view === "albums" && albumLayout === "shelf" ? "shelf-mode" : ""} onScroll={(event) => { screenPositionsRef.current[screenKey] = event.currentTarget.scrollTop; }}>
-      <header className="topbar"><label className="search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search albums, artists and songs" /><kbd>⌘ L</kbd></label><div className="top-actions"><span className="app-version mobile-version" aria-label={`Record Shelf version ${__APP_VERSION__}`}>v{__APP_VERSION__}</span><button className="art-button" onClick={() => void fetchAllMissingArtwork()} disabled={!library.albums.length || artworkBusy !== null}>◇ Find Artwork</button><button className="scan-button" onClick={() => void rescan()} disabled={!!scanProgress}>{scanProgress ? "Scanning…" : library.root ? "Rescan" : "Choose Music Folder"}</button></div></header>
+      <header className="topbar"><label className="search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search albums, artists and songs" /><kbd>⌘ L</kbd></label><div className="top-actions"><span className="app-version mobile-version" aria-label={`Record Shelf version ${__APP_VERSION__}`}>v{__APP_VERSION__}</span><button className="settings-button" onClick={() => void openNasSettings()} title="Music source settings">⚙</button><button className="art-button" onClick={() => void fetchAllMissingArtwork()} disabled={!library.albums.length || artworkBusy !== null}>◇ Find Artwork</button><button className="scan-button" onClick={() => void rescan()} disabled={!!scanProgress}>{scanProgress ? "Scanning…" : library.root ? "Rescan" : "Choose Music Folder"}</button></div></header>
       {scanProgress && <div className="scan-strip"><div style={{ width: scanProgress.total ? `${scanProgress.current / scanProgress.total * 100}%` : "12%" }} /><span>{scanProgress.phase === "discovering" ? "Finding music on your NAS…" : `Reading ${scanProgress.current} of ${scanProgress.total}${scanProgress.file ? ` · ${scanProgress.file}` : ""}`}</span></div>}
       {artworkProgress && <div className="scan-strip artwork-strip"><div style={{ width: artworkProgress.total ? `${artworkProgress.current / artworkProgress.total * 100}%` : "5%" }} /><span>{artworkProgress.status === "searching" ? "Searching" : artworkProgress.status === "found" ? "Found artwork for" : "No match for"} {artworkProgress.album} · {artworkProgress.current}/{artworkProgress.total}</span></div>}
       {notice && <button className={`notice ${notice.kind}`} onClick={() => setNotice(null)}>{notice.message}<span>×</span></button>}
@@ -526,5 +583,6 @@ export default function App() {
 
     {playlistDialog && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPlaylistDialog(null); }}><div className="playlist-dialog" role="dialog" aria-modal="true" aria-label="Playlist chooser"><button className="modal-close" onClick={() => setPlaylistDialog(null)}>×</button><p className="eyebrow">PLAYLISTS</p><h2>{playlistDialog.track ? "Add to a playlist" : "New playlist"}</h2>{playlistDialog.track && <p className="dialog-track">“{playlistDialog.track.title}” by {playlistDialog.track.artist}</p>}{playlistDialog.track && library.playlists.length > 0 && <div className="playlist-choices">{library.playlists.map((playlist) => <button key={playlist.id} onClick={() => void choosePlaylist(playlist.id)}><span>♫</span><b>{playlist.name}</b><small>{playlist.trackIds.length} songs</small></button>)}</div>}{playlistDialog.track && library.playlists.length > 0 && <div className="or"><span>or create another</span></div>}<form onSubmit={(event) => { event.preventDefault(); void createPlaylist(); }}><input autoFocus value={newPlaylistName} onChange={(event) => setNewPlaylistName(event.target.value)} placeholder="Playlist name" /><button type="submit" disabled={!newPlaylistName.trim()}>{playlistDialog.track ? "Create & Add" : "Create Playlist"}</button></form></div></div>}
     {playlistToDelete && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPlaylistToDelete(null); }}><div className="playlist-dialog confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-playlist-title"><button className="modal-close" onClick={() => setPlaylistToDelete(null)}>×</button><p className="eyebrow">DELETE PLAYLIST</p><h2 id="delete-playlist-title">Delete “{playlistToDelete.name}”?</h2><p className="confirm-copy">This removes the playlist only. Your music files and albums will not be changed.</p><div className="confirm-actions"><button onClick={() => setPlaylistToDelete(null)}>Cancel</button><button className="danger" onClick={() => void deletePlaylist()}>Delete Playlist</button></div></div></div>}
+    {nasDialog && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !nasSaving) setNasDialog(false); }}><div className="playlist-dialog nas-dialog" role="dialog" aria-modal="true" aria-labelledby="nas-settings-title"><button className="modal-close" onClick={() => setNasDialog(false)} disabled={nasSaving}>×</button><p className="eyebrow">MUSIC SOURCE</p><h2 id="nas-settings-title">Connect your NAS</h2><p className="nas-help">Enter the share once. Record Shelf will reconnect it at startup and after your computer wakes.</p><div className="nas-fields"><label><span>NAS address</span><input autoFocus value={nasForm.server} onChange={(event) => setNasForm((current) => ({ ...current, server: event.target.value }))} placeholder="nas.local or 192.168.1.20" /></label><label><span>Share name</span><input value={nasForm.share} onChange={(event) => setNasForm((current) => ({ ...current, share: event.target.value }))} placeholder="Music" /></label><label><span>Music subfolder <small>optional</small></span><input value={nasForm.subfolder} onChange={(event) => setNasForm((current) => ({ ...current, subfolder: event.target.value }))} placeholder="Library" /></label><label><span>Username</span><input value={nasForm.username} onChange={(event) => setNasForm((current) => ({ ...current, username: event.target.value }))} autoComplete="username" /></label><label><span>Password {nasHasPassword && <small>saved securely—leave blank to keep it</small>}</span><input type="password" value={nasForm.password ?? ""} onChange={(event) => setNasForm((current) => ({ ...current, password: event.target.value }))} autoComplete="current-password" placeholder={nasHasPassword ? "••••••••" : "NAS password"} /></label><label className="nas-toggle"><input type="checkbox" checked={nasForm.autoConnect} onChange={(event) => setNasForm((current) => ({ ...current, autoConnect: event.target.checked }))} /><span>Connect automatically</span></label></div><p className="credential-note">Your password is protected by macOS Keychain or Windows account encryption. It is never stored in the music catalogue.</p><div className="confirm-actions"><button onClick={() => void useLocalFolder()} disabled={nasSaving}>Use Local Folder</button><button className="primary" onClick={() => void saveNasSettings()} disabled={nasSaving || !nasForm.server.trim() || !nasForm.share.trim()}>{nasSaving ? "Connecting…" : "Save & Test Connection"}</button></div></div></div>}
   </div>;
 }

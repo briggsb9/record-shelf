@@ -1,5 +1,5 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
-import type { ArtworkProgress, ArtworkResult, Library, Playlist, ScanProgress, Track } from "./types";
+import type { ArtworkProgress, ArtworkResult, ConnectionStatus, Library, NasSettings, Playlist, ScanProgress, Track } from "./types";
 
 type NativeEnvelope<T> = { value: T };
 type NativeRecordShelfPlugin = {
@@ -49,6 +49,10 @@ const mobileBridge: Window["recordShelf"] = {
   getLibrary: async () => normaliseLibrary((await NativeRecordShelf.getLibrary()).value),
   chooseFolder: async () => (await NativeRecordShelf.chooseFolder()).root,
   scanFolder: async (root) => normaliseLibrary((await NativeRecordShelf.scanFolder({ root })).value),
+  getNasSettings: async (): Promise<NasSettings> => ({ server: "", share: "", subfolder: "", username: "", autoConnect: true, hasPassword: false }),
+  getConnectionStatus: async (): Promise<ConnectionStatus> => ({ state: "connected", message: "Android folder permission saved", root: null }),
+  saveNasSettings: async () => { throw new Error("On Android, choose the NAS through the system Files screen. Direct SMB setup is not available in this build yet."); },
+  connectNas: async () => ({ status: { state: "connected" as const, message: "Android will reconnect through its saved file provider", root: null }, library: normaliseLibrary((await NativeRecordShelf.getLibrary()).value) }),
   createPlaylist: async (name) => (await NativeRecordShelf.createPlaylist({ name })).value,
   deletePlaylist: async (playlistId) => normaliseLibrary((await NativeRecordShelf.deletePlaylist({ playlistId })).value),
   addToPlaylist: async (playlistId, trackId) => normaliseLibrary((await NativeRecordShelf.addToPlaylist({ playlistId, trackId })).value),
@@ -73,6 +77,7 @@ const mobileBridge: Window["recordShelf"] = {
   onArtworkProgress: (_callback: (progress: ArtworkProgress) => void) => () => undefined,
   onChooseLibrary: () => () => undefined,
   onPlayerCommand: () => () => undefined,
+  onConnectionStatus: () => () => undefined,
 };
 
 export const recordShelf: Window["recordShelf"] = window.recordShelf ?? mobileBridge;

@@ -1,8 +1,9 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, net, protocol } from "electron";
-import { mkdir } from "node:fs/promises";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, net, powerMonitor, protocol } from "electron";
+import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { MusicLibrary, type ArtworkProgress, type ScanProgress } from "./library.js";
+import { NasConnectionManager, type ConnectionStatus, type NasSettingsInput } from "./nas.js";
 
 protocol.registerSchemesAsPrivileged([
   { scheme: "music-file", privileges: { standard: true, secure: true, corsEnabled: true, supportFetchAPI: true, stream: true } },
@@ -19,6 +20,30 @@ app.setPath(
 );
 let mainWindow: BrowserWindow | null = null;
 let library: MusicLibrary;
+let nas: NasConnectionManager;
+let reconnectTimer: NodeJS.Timeout | null = null;
+let connectionStatus: ConnectionStatus = { state: "local", message: "Using a local or already mounted folder", root: null };
+
+async function connectNas(force = false): Promise<ConnectionStatus> {
+  let status = await nas.connect(force);
+  if (status.root) library.setLibraryRoot(status.root);
+  if (status.state === "local") {
+    const root = library.getLibraryRoot();
+    if (root && !(await stat(root).catch(() => null))?.isDirectory()) {
+      status = { state: "offline", message: "The saved music folder is unavailable. Open Music Source settings to reconnect it.", root: null };
+    }
+  }
+  connectionStatus = status;
+  mainWindow?.webContents.send("nas:status", status);
+  return status;
+}
+
+function scheduleReconnect(): void {
+  if (reconnectTimer) clearInterval(reconnectTimer);
+  reconnectTimer = setInterval(() => {
+    void connectNas();
+  }, 30_000);
+}
 
 function sendPlayerCommand(command: "toggle" | "next" | "previous" | "stop"): void {
   mainWindow?.webContents.send("player:command", command);
@@ -80,10 +105,12 @@ app.whenReady().then(async () => {
   const artworkDirectory = path.join(userData, "artwork");
   await mkdir(artworkDirectory, { recursive: true });
   library = new MusicLibrary(path.join(userData, "library.sqlite"), artworkDirectory);
+  nas = new NasConnectionManager(path.join(userData, "nas-source.json"), path.join(userData, "nas-password.bin"));
 
-  protocol.handle("music-file", (request) => {
+  protocol.handle("music-file", async (request) => {
     const url = new URL(request.url);
     const id = Number(url.pathname.slice(1));
+    await connectNas();
     const filePath = library.getTrackPath(id);
     return filePath ? net.fetch(pathToFileURL(filePath).href, { headers: request.headers }) : new Response("Track not found", { status: 404 });
   });
@@ -95,6 +122,17 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("library:snapshot", () => library.snapshot());
+  ipcMain.handle("nas:settings", () => nas.getSettings());
+  ipcMain.handle("nas:status", () => connectionStatus);
+  ipcMain.handle("nas:save", async (_event, settings: NasSettingsInput) => {
+    await nas.saveSettings(settings);
+    const status = await connectNas(true);
+    return { settings: await nas.getSettings(), status, library: library.snapshot() };
+  });
+  ipcMain.handle("nas:connect", async () => {
+    const status = await connectNas(true);
+    return { status, library: library.snapshot() };
+  });
   ipcMain.handle("library:choose-folder", async () => {
     if (!mainWindow) return null;
     const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"], title: "Choose your NAS music folder" });
@@ -102,6 +140,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("library:scan", async (_event, root: string) => {
     await library.scan(root, (progress: ScanProgress) => mainWindow?.webContents.send("library:scan-progress", progress));
+    await connectNas(true);
     return library.snapshot();
   });
   ipcMain.handle("playlist:create", (_event, name: string) => library.createPlaylist(name));
@@ -136,11 +175,13 @@ app.whenReady().then(async () => {
 
   createMenu();
   await createWindow();
+  void connectNas().then(() => scheduleReconnect());
+  powerMonitor.on("resume", () => { void connectNas(); });
   globalShortcut.register("MediaPlayPause", () => sendPlayerCommand("toggle"));
   globalShortcut.register("MediaNextTrack", () => sendPlayerCommand("next"));
   globalShortcut.register("MediaPreviousTrack", () => sendPlayerCommand("previous"));
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });
 });
 
-app.on("will-quit", () => globalShortcut.unregisterAll());
+app.on("will-quit", () => { globalShortcut.unregisterAll(); if (reconnectTimer) clearInterval(reconnectTimer); });
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });

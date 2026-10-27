@@ -6,7 +6,7 @@ import { parseFile } from "music-metadata";
 
 const AUDIO_EXTENSIONS = new Set([".aac", ".aif", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma"]);
 const COVER_NAMES = ["cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"];
-const MUSICBRAINZ_USER_AGENT = "RecordShelf/0.5.2 (desktop-music-player)";
+const MUSICBRAINZ_USER_AGENT = "RecordShelf/0.6.0 (desktop-music-player)";
 const MAX_ARTWORK_BYTES = 15 * 1024 * 1024;
 
 export type ScanProgress = { phase: "discovering" | "reading" | "finishing"; current: number; total: number; file?: string };
@@ -60,6 +60,7 @@ export class MusicLibrary {
       );
       CREATE TABLE IF NOT EXISTS tracks (
         id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL UNIQUE, source_root TEXT NOT NULL,
+        relative_path TEXT,
         album_id TEXT NOT NULL REFERENCES albums(id) ON DELETE CASCADE, title TEXT NOT NULL, artist TEXT NOT NULL,
         album TEXT NOT NULL, album_artist TEXT NOT NULL, track_number INTEGER NOT NULL DEFAULT 0,
         disc_number INTEGER NOT NULL DEFAULT 0, duration REAL NOT NULL DEFAULT 0, year INTEGER,
@@ -83,8 +84,19 @@ export class MusicLibrary {
     this.ensureAlbumColumn("artwork_updated_at", "INTEGER NOT NULL DEFAULT 0");
     this.ensureAlbumColumn("musicbrainz_id", "TEXT");
     this.ensureTrackColumn("genres", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureTrackColumn("relative_path", "TEXT");
+    this.migrateRelativePaths();
     const genreVersion = this.db.prepare("SELECT value FROM settings WHERE key = 'genre_metadata_version'").get() as Row | undefined;
     this.genreMetadataReady = genreVersion?.value === "1";
+  }
+
+  private migrateRelativePaths(): void {
+    const rows = this.db.prepare("SELECT id, path, source_root FROM tracks WHERE relative_path IS NULL OR relative_path = ''").all() as Row[];
+    const update = this.db.prepare("UPDATE tracks SET relative_path = ? WHERE id = ?");
+    for (const row of rows) {
+      const relative = path.relative(String(row.source_root), String(row.path));
+      if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) update.run(relative, Number(row.id));
+    }
   }
 
   private ensureAlbumColumn(name: string, definition: string): void {
@@ -103,8 +115,14 @@ export class MusicLibrary {
   }
 
   getTrackPath(id: number): string | null {
-    const row = this.db.prepare("SELECT path FROM tracks WHERE id = ?").get(id) as Row | undefined;
-    return row ? String(row.path) : null;
+    const row = this.db.prepare("SELECT path, relative_path FROM tracks WHERE id = ?").get(id) as Row | undefined;
+    if (!row) return null;
+    const root = this.getLibraryRoot();
+    return root && row.relative_path ? path.join(root, String(row.relative_path)) : String(row.path);
+  }
+
+  setLibraryRoot(root: string): void {
+    this.db.prepare("INSERT INTO settings (key, value) VALUES ('library_root', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(root);
   }
 
   getArtworkPath(albumId: string): string | null {
@@ -193,8 +211,10 @@ export class MusicLibrary {
     const existingCount = this.db.prepare("SELECT COUNT(*) AS count FROM tracks").get() as Row;
     if (files.length === 0 && Number(existingCount.count) > 0) throw new Error("No audio files were visible on the share. The existing catalogue was retained in case the NAS is temporarily unavailable.");
 
-    const existingFile = this.db.prepare("SELECT modified_ms, album_id FROM tracks WHERE path = ?");
-    const markUnchanged = this.db.prepare("UPDATE tracks SET scan_token = ?, source_root = ? WHERE path = ?");
+    const existingFile = this.db.prepare("SELECT id, modified_ms, album_id, path FROM tracks WHERE path = ?");
+    const existingRelative = this.db.prepare("SELECT id, modified_ms, album_id, path FROM tracks WHERE relative_path = ? LIMIT 1");
+    const markUnchanged = this.db.prepare("UPDATE tracks SET scan_token = ?, source_root = ?, path = ?, relative_path = ? WHERE id = ?");
+    const relocateTrack = this.db.prepare("UPDATE tracks SET path = ?, source_root = ?, relative_path = ? WHERE id = ?");
     const updateLocalArtwork = this.db.prepare("UPDATE albums SET artwork_path = ?, artwork_source = ?, artwork_updated_at = ? WHERE id = ?");
     const upsertAlbum = this.db.prepare(`
       INSERT INTO albums (id, title, artist, year, artwork_path, artwork_source, artwork_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -204,12 +224,13 @@ export class MusicLibrary {
         artwork_updated_at = CASE WHEN excluded.artwork_path IS NOT NULL THEN excluded.artwork_updated_at ELSE albums.artwork_updated_at END
     `);
     const upsertTrack = this.db.prepare(`
-      INSERT INTO tracks (path, source_root, album_id, title, artist, album, album_artist, track_number, disc_number, duration, year, genres, modified_ms, scan_token)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tracks (path, source_root, relative_path, album_id, title, artist, album, album_artist, track_number, disc_number, duration, year, genres, modified_ms, scan_token)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(path) DO UPDATE SET album_id = excluded.album_id, title = excluded.title, artist = excluded.artist,
         album = excluded.album, album_artist = excluded.album_artist, track_number = excluded.track_number,
         disc_number = excluded.disc_number, duration = excluded.duration, year = excluded.year, genres = excluded.genres,
-        modified_ms = excluded.modified_ms, scan_token = excluded.scan_token, source_root = excluded.source_root
+        modified_ms = excluded.modified_ms, scan_token = excluded.scan_token, source_root = excluded.source_root,
+        relative_path = excluded.relative_path
     `);
     const artworkFound = new Set<string>();
     const artworkChecked = new Set<string>();
@@ -218,9 +239,11 @@ export class MusicLibrary {
       onProgress({ phase: "reading", current: index + 1, total: files.length, file: path.basename(file) });
       try {
         const fileStat = await stat(file);
-        const existing = existingFile.get(file) as Row | undefined;
+        const relativePath = path.relative(root, file);
+        const existing = (existingFile.get(file) ?? existingRelative.get(relativePath)) as Row | undefined;
         if (existing && this.genreMetadataReady && Math.abs(Number(existing.modified_ms) - fileStat.mtimeMs) < 1) {
-          markUnchanged.run(scanToken, root, file);
+          const existingId = existing.id ?? (this.db.prepare("SELECT id FROM tracks WHERE path = ?").get(file) as Row | undefined)?.id;
+          if (existingId) markUnchanged.run(scanToken, root, file, relativePath, Number(existingId));
           const existingAlbumId = existing.album_id ? String(existing.album_id) : null;
           if (existingAlbumId && !artworkChecked.has(existingAlbumId) && !this.getArtworkPath(existingAlbumId)) {
             artworkChecked.add(existingAlbumId);
@@ -229,6 +252,7 @@ export class MusicLibrary {
           }
           continue;
         }
+        if (existing?.id && String(existing.path) !== file) relocateTrack.run(file, root, relativePath, Number(existing.id));
         const metadata = await parseFile(file, { duration: true, skipCovers: false });
         const common = metadata.common;
         const title = common.title?.trim() || path.basename(file, path.extname(file));
@@ -242,9 +266,12 @@ export class MusicLibrary {
           if (artwork) artworkFound.add(albumId);
         }
         upsertAlbum.run(albumId, album, albumArtist, common.year ?? null, artwork?.path ?? null, artwork?.source ?? null, artwork ? Date.now() : 0);
-        upsertTrack.run(file, root, albumId, title, artist, album, albumArtist, common.track.no ?? 0, common.disk.no ?? 0, metadata.format.duration ?? 0, common.year ?? null, JSON.stringify(normaliseGenres(common.genre)), fileStat.mtimeMs, scanToken);
+        upsertTrack.run(file, root, path.relative(root, file), albumId, title, artist, album, albumArtist, common.track.no ?? 0, common.disk.no ?? 0, metadata.format.duration ?? 0, common.year ?? null, JSON.stringify(normaliseGenres(common.genre)), fileStat.mtimeMs, scanToken);
       } catch (error) {
-        if (existingFile.get(file)) markUnchanged.run(scanToken, root, file);
+        const relativePath = path.relative(root, file);
+        const existing = (existingFile.get(file) ?? existingRelative.get(relativePath)) as Row | undefined;
+        const existingId = existing?.id ?? (this.db.prepare("SELECT id FROM tracks WHERE path = ?").get(file) as Row | undefined)?.id;
+        if (existingId) markUnchanged.run(scanToken, root, file, relativePath, Number(existingId));
         console.warn(`Could not read metadata for ${file}`, error);
       }
     }

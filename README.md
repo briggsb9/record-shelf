@@ -21,10 +21,12 @@ The [GitHub releases page](https://github.com/briggsb9/record-shelf/releases) in
 
 ## macOS development
 
-1. Mount the NAS share in Finder (`Go` → `Connect to Server…`, usually `smb://your-nas/music`).
-2. Install dependencies with `npm install`.
-3. Run `npm run dev`.
-4. Choose the mounted music folder in Record Shelf.
+1. Install dependencies with `npm install`.
+2. Run `npm run dev`.
+3. Open Music Source settings with the cog in Record Shelf.
+4. Enter the NAS address, SMB share, optional music subfolder and NAS account, then choose **Save & Test Connection**.
+
+On macOS and Windows, Record Shelf reconnects the saved SMB source at startup, before playback, after wake and periodically while it is open. The password is protected using macOS Keychain or Windows account encryption; it is not written to the catalogue or settings file. The cached album catalogue and artwork remain available while the NAS is temporarily offline. **Use Local Folder** remains available for local music or shares you prefer to mount yourself.
 
 The first scan reads tags and artwork sequentially to avoid overwhelming a NAS. Subsequent scans reuse unchanged records instead of rereading every file over the network. If the share is unavailable, the existing catalogue is retained rather than cleared. Supported formats include MP3, M4A/AAC/ALAC, FLAC, Ogg/Opus, WAV, AIFF and WMA where Chromium has a matching decoder.
 
@@ -39,7 +41,7 @@ To get an APK without installing Android Studio:
 3. Download the `record-shelf-android-debug` artifact and unzip it.
 4. Move `Record-Shelf-Android-debug.apk` to the Android device, allow installs from that source when prompted, and open the APK.
 
-For music on a NAS, first configure an Android file manager or Documents Provider that exposes the SMB share in Android's system **Files** picker. In Record Shelf, tap **Choose Music Folder** and select that exposed folder. Provider performance and supported audio codecs vary by device; no music is copied into Record Shelf.
+For music on a NAS, first configure an Android file manager or Documents Provider that exposes the SMB share in Android's system **Files** picker. In Record Shelf, tap **Choose Music Folder** and select that exposed folder. Android grants persistent access to the chosen location, although reconnection and saved NAS credentials are controlled by that provider. Provider performance and supported audio codecs vary by device; no music is copied into Record Shelf. Built-in Android SMB connectivity is planned so this provider is no longer required.
 
 This is an unsigned-for-production debug APK intended for sideloaded testing, not a Play Store release. GitHub Actions retains each ordinary build artifact for 30 days. Tagged builds are also attached to a persistent GitHub prerelease.
 

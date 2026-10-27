@@ -1,10 +1,15 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { ArtworkProgress, ScanProgress } from "./library.js";
+import type { ConnectionStatus, NasSettingsInput } from "./nas.js";
 
 contextBridge.exposeInMainWorld("recordShelf", {
   getLibrary: () => ipcRenderer.invoke("library:snapshot"),
   chooseFolder: () => ipcRenderer.invoke("library:choose-folder"),
   scanFolder: (root: string) => ipcRenderer.invoke("library:scan", root),
+  getNasSettings: () => ipcRenderer.invoke("nas:settings"),
+  getConnectionStatus: () => ipcRenderer.invoke("nas:status"),
+  saveNasSettings: (settings: NasSettingsInput) => ipcRenderer.invoke("nas:save", settings),
+  connectNas: () => ipcRenderer.invoke("nas:connect"),
   createPlaylist: (name: string) => ipcRenderer.invoke("playlist:create", name),
   deletePlaylist: (playlistId: string) => ipcRenderer.invoke("playlist:delete", playlistId),
   addToPlaylist: (playlistId: string, trackId: number) => ipcRenderer.invoke("playlist:add-track", playlistId, trackId),
@@ -32,5 +37,10 @@ contextBridge.exposeInMainWorld("recordShelf", {
     const listener = (_event: Electron.IpcRendererEvent, progress: ArtworkProgress) => callback(progress);
     ipcRenderer.on("artwork:progress", listener);
     return () => ipcRenderer.removeListener("artwork:progress", listener);
+  },
+  onConnectionStatus: (callback: (status: ConnectionStatus) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: ConnectionStatus) => callback(status);
+    ipcRenderer.on("nas:status", listener);
+    return () => ipcRenderer.removeListener("nas:status", listener);
   },
 });
