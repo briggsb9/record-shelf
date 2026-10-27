@@ -34,7 +34,7 @@ async function connectNas(force = false): Promise<ConnectionStatus> {
     }
   }
   connectionStatus = status;
-  mainWindow?.webContents.send("nas:status", status);
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send("nas:status", status);
   return status;
 }
 
@@ -98,6 +98,7 @@ async function createWindow(): Promise<void> {
   else await mainWindow.loadFile(path.join(currentDirectory, "../dist/index.html"));
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  mainWindow.on("closed", () => { mainWindow = null; });
 }
 
 app.whenReady().then(async () => {
