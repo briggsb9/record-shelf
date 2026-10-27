@@ -6,7 +6,7 @@ import { parseFile } from "music-metadata";
 
 const AUDIO_EXTENSIONS = new Set([".aac", ".aif", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma"]);
 const COVER_NAMES = ["cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"];
-const MUSICBRAINZ_USER_AGENT = "RecordShelf/0.6.2 (desktop-music-player)";
+const MUSICBRAINZ_USER_AGENT = "RecordShelf/0.6.3 (desktop-music-player)";
 const MAX_ARTWORK_BYTES = 15 * 1024 * 1024;
 
 export type ScanProgress = { phase: "discovering" | "reading" | "finishing"; current: number; total: number; file?: string };
