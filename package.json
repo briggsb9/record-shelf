@@ -1,10 +1,11 @@
 {
   "name": "record-shelf",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "private": true,
   "type": "module",
   "description": "A fast, album-first music player for desktop, Android and NAS libraries.",
   "author": "briggsb9",
+  "desktopName": "Record Shelf",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -26,7 +27,8 @@
     "preview": "vite preview",
     "start": "electron .",
     "package:mac": "npm run build && electron-builder --mac",
-    "package:win": "npm run build && electron-builder --win"
+    "package:win": "npm run build && electron-builder --win",
+    "package:linux": "npm run build && electron-builder --linux AppImage deb --x64"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.2",
@@ -70,6 +72,17 @@
     },
     "win": {
       "target": "nsis"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Audio",
+      "icon": "build/icon.iconset/icon_512x512.png",
+      "maintainer": "briggsb9 <30274540+briggsb9@users.noreply.github.com>",
+      "syncDesktopName": true,
+      "artifactName": "Record-Shelf-${version}-linux-${arch}.${ext}"
     }
   }
 }

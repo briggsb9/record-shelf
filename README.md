@@ -1,7 +1,7 @@
 # Record Shelf
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Android APK](https://github.com/briggsb9/record-shelf/actions/workflows/android.yml/badge.svg)](https://github.com/briggsb9/record-shelf/actions/workflows/android.yml)
+[![Multiplatform release](https://github.com/briggsb9/record-shelf/actions/workflows/android-release.yml/badge.svg)](https://github.com/briggsb9/record-shelf/actions/workflows/android-release.yml)
 
 Record Shelf is an open-source, album-first music player for libraries stored locally or on a NAS. It builds a fast local catalogue, retains cover artwork locally, and plays the original files directly from their source.
 
@@ -12,12 +12,13 @@ The project targets:
 - **macOS:** primary desktop development and testing platform.
 - **Android:** phone and tablet test builds distributed as debug APKs.
 - **Windows:** Electron desktop build with local-folder, UNC-share and automatic SMB reconnection support.
+- **Linux:** x64 AppImage and Debian package with local-folder and mounted-share support.
 
 Record Shelf is under active development. Back up important playlists and catalogue data before testing a new release.
 
 ## Download a test build
 
-The [GitHub releases page](https://github.com/briggsb9/record-shelf/releases) includes installable packages for Android, macOS (Apple Silicon and Intel) and Windows for each completed tagged build. These test builds are not code-signed for public distribution, so macOS Gatekeeper or Windows SmartScreen may ask you to confirm that you trust the app.
+The [GitHub releases page](https://github.com/briggsb9/record-shelf/releases) includes installable packages for Android, Linux x64, macOS (Apple Silicon and Intel) and Windows for each completed tagged build. These test builds are not code-signed for public distribution, so macOS Gatekeeper or Windows SmartScreen may ask you to confirm that you trust the app.
 
 ## macOS development
 
@@ -36,10 +37,9 @@ The Android build supports phones and tablets with touch-sized controls, respons
 
 To get an APK without installing Android Studio:
 
-1. Open the repository's **Actions** tab on GitHub.
-2. Select **Android APK**, then choose the latest successful run. You can also use **Run workflow** to start a build manually.
-3. Download the `record-shelf-android-debug` artifact and unzip it.
-4. Move `Record-Shelf-Android-debug.apk` to the Android device, allow installs from that source when prompted, and open the APK.
+1. Open the repository's [Releases page](https://github.com/briggsb9/record-shelf/releases).
+2. Open the latest release and download `Record-Shelf-*-Android.apk`.
+3. Move the APK to the Android device, allow installs from that source when prompted, and open it.
 
 For music on a NAS, first configure an Android file manager or Documents Provider that exposes the SMB share in Android's system **Files** picker. In Record Shelf, tap **Choose Music Folder** and select that exposed folder. Android grants persistent access to the chosen location, although reconnection and saved NAS credentials are controlled by that provider. Provider performance and supported audio codecs vary by device; no music is copied into Record Shelf. Built-in Android SMB connectivity is planned so this provider is no longer required.
 
@@ -75,9 +75,10 @@ The Artists view displays cached artist portraits when available and falls back 
 
 - macOS: `npm run package:mac`
 - Windows: `npm run package:win`
+- Linux x64 AppImage and Debian package: `npm run package:linux`
 - Android debug APK: `npm run android:apk`
 
-Windows can use a mapped drive or UNC share. Guest shares connect without sending empty credential parameters; authenticated shares use credentials protected by Windows account encryption. Tagged releases automatically build and test the Android package and build both desktop installers on their native GitHub runners.
+Windows can use a mapped drive or UNC share. Guest shares connect without sending empty credential parameters; authenticated shares use credentials protected by Windows account encryption. On Linux, mount the NAS share using the desktop file manager or the operating system, then select that mounted music folder in Record Shelf. Tagged releases automatically build Android, Linux, macOS and Windows packages on GitHub's native runners.
 
 ## Privacy and network access
 

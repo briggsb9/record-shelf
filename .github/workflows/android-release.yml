@@ -86,8 +86,31 @@ jobs:
           path: release/*.exe
           if-no-files-found: error
 
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build Linux packages
+        run: npm run package:linux -- --publish never
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-packages
+          path: |
+            release/*.AppImage
+            release/*.deb
+          if-no-files-found: error
+
   publish:
-    needs: [android, macos, windows]
+    needs: [android, macos, windows, linux]
     runs-on: ubuntu-latest
     steps:
       - name: Download packages
