@@ -69,6 +69,8 @@ The Artists and Genres screens have explicit **Shuffle** controls, and every pla
 
 The transport bar also provides shuffle and repeat controls. Repeat cycles through off, repeat all and repeat one. Clicking the now-playing cover, title or artist at the bottom left opens that album directly in the Album detail view.
 
+Album **Play** starts at the first song and places the complete album in **Up Next**. Selecting an individual song from an album starts there and queues the remaining songs in album order. A song's visible **•••** action menu provides **Play Next**, **Add After Next**, **Add to End**, and **Add to Playlist**, including on touch devices without a right-click menu.
+
 The Artists view displays cached artist portraits when available and falls back to a representative album cover. **Find Artist Photos** matches artists through MusicBrainz, retrieves freely reusable images from Wikipedia or Wikimedia Commons, and keeps the downloaded portraits in Record Shelf's local artwork cache across restarts. Android currently uses the album-cover fallback for artist cards.
 
 ## Build installers

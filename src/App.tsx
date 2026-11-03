@@ -529,6 +529,22 @@ export default function App() {
     setNotice({ kind: "success", message: `“${track.title}” will play next` });
   };
 
+  const addAfterNext = (track: Track) => {
+    const shouldPrependCurrent = !!currentTrack && !queue.some((item) => item.id === currentTrack.id);
+    if (shouldPrependCurrent) { queueIndexRef.current = 0; setQueueIndex(0); }
+    setQueue((current) => {
+      if (!currentTrack) return [track, ...current];
+      const currentIndex = current[queueIndexRef.current]?.id === currentTrack.id
+        ? queueIndexRef.current
+        : current.findIndex((item) => item.id === currentTrack.id);
+      if (currentIndex < 0) return [currentTrack, ...current.slice(0, 1), track, ...current.slice(1)];
+      const next = [...current];
+      next.splice(Math.min(currentIndex + 2, next.length), 0, track);
+      return next;
+    });
+    setNotice({ kind: "success", message: `“${track.title}” added after the next song` });
+  };
+
   const addToQueue = (track: Track) => {
     const shouldPrependCurrent = !!currentTrack && !queue.some((item) => item.id === currentTrack.id);
     if (shouldPrependCurrent) { queueIndexRef.current = 0; setQueueIndex(0); }
@@ -547,18 +563,32 @@ export default function App() {
     setNotice({ kind: "success", message: `${album.tracks.length} tracks from “${album.title}” added to Up Next` });
   };
 
+  const playAlbum = (album: Album) => {
+    if (!album.tracks[0]) return;
+    setShuffleEnabled(false);
+    playTrack(album.tracks[0], album.tracks, 0);
+    setNotice({ kind: "success", message: `Playing “${album.title}” · ${album.tracks.length} songs queued` });
+  };
+
+  const playAlbumFromTrack = (tracks: Track[], index: number) => {
+    const runningOrder = tracks.slice(index);
+    if (!runningOrder[0]) return;
+    setShuffleEnabled(false);
+    playTrack(runningOrder[0], runningOrder, 0);
+  };
+
   const openTrackMenu = (track: Track, button: HTMLButtonElement) => {
     const bounds = button.getBoundingClientRect();
     const menuWidth = 216;
-    const menuHeight = 174;
+    const menuHeight = 214;
     const x = Math.max(8, Math.min(bounds.right - menuWidth, window.innerWidth - menuWidth - 8));
     const y = bounds.bottom + menuHeight + 8 <= window.innerHeight ? bounds.bottom + 4 : Math.max(8, bounds.top - menuHeight - 4);
     setTrackMenu({ track, x, y });
   };
 
-  const trackRows = (tracks: Track[], playlistMode = false, preserveQueue = false) => <div className="track-list">
-    {tracks.map((track, index) => { const isCurrent = preserveQueue ? queueIndex === index : currentTrack?.id === track.id; return <div key={`${track.id}-${index}`} className={isCurrent ? "track active" : "track"} onDoubleClick={() => playTrack(track, preserveQueue ? null : [track], preserveQueue ? index : 0)}>
-      <button className="track-play" onClick={() => isCurrent ? togglePlayback() : playTrack(track, preserveQueue ? null : [track], preserveQueue ? index : 0)} aria-label={isCurrent && isPlaying ? `Pause ${track.title}` : `Play ${track.title}`}>{isCurrent && isPlaying ? "❚❚" : track.trackNumber || index + 1}</button>
+  const trackRows = (tracks: Track[], playlistMode = false, preserveQueue = false, continueAlbum = false) => <div className="track-list">
+    {tracks.map((track, index) => { const isCurrent = preserveQueue ? queueIndex === index : currentTrack?.id === track.id; const startTrack = () => continueAlbum ? playAlbumFromTrack(tracks, index) : playTrack(track, preserveQueue ? null : [track], preserveQueue ? index : 0); return <div key={`${track.id}-${index}`} className={isCurrent ? "track active" : "track"} onDoubleClick={startTrack}>
+      <button className="track-play" onClick={() => isCurrent ? togglePlayback() : startTrack()} aria-label={isCurrent && isPlaying ? `Pause ${track.title}` : `Play ${track.title}`}>{isCurrent && isPlaying ? "❚❚" : track.trackNumber || index + 1}</button>
       <div className="track-name"><b>{track.title}</b><span>{track.artist}</span></div>
       <span className="track-album">{track.album}</span>
       <button className="track-actions" title={`Actions for ${track.title}`} aria-label={`Actions for ${track.title}`} aria-haspopup="menu" onClick={(event) => { event.stopPropagation(); openTrackMenu(track, event.currentTarget); }}>•••</button>
@@ -568,7 +598,7 @@ export default function App() {
   </div>;
 
   const albumActions = selectedAlbum && <div className="album-actions">
-    <button className="primary" onClick={() => selectedAlbum.tracks[0] && playTrack(selectedAlbum.tracks[0], [selectedAlbum.tracks[0]])}>▶ Play</button>
+    <button className="primary" onClick={() => playAlbum(selectedAlbum)}>▶ Play</button>
     <button onClick={() => addAlbumToQueue(selectedAlbum)}>＋ Queue</button>
     {!isNativeAndroid && <button onClick={() => void fetchArtwork(selectedAlbum)} disabled={artworkBusy !== null}>{artworkBusy === selectedAlbum.id ? "Searching…" : selectedAlbum.artworkUrl ? "↻ Find another cover" : "◇ Find cover online"}</button>}
   </div>;
@@ -578,22 +608,22 @@ export default function App() {
       <div className="shelf-shell">
         <button className="shelf-arrow left" onClick={() => scrollShelf(-1)} aria-label="Scroll albums left">‹</button>
         <div className="album-shelf horizontal" ref={shelfRef} onScroll={(event) => { shelfPositionsRef.current[screenKey] = event.currentTarget.scrollLeft; }} onWheel={(event) => { if (Math.abs(event.deltaY) > Math.abs(event.deltaX) && shelfRef.current) { shelfRef.current.scrollLeft += event.deltaY; event.preventDefault(); } }}>
-          {filteredAlbums.map((album) => <button key={album.id} className={`album-card ${selectedAlbum.id === album.id ? "selected" : ""}`} onClick={() => showAlbum(album)} onDoubleClick={() => album.tracks[0] && playTrack(album.tracks[0], [album.tracks[0]])}><Artwork album={album} /><b>{album.title}</b><span>{album.artist}</span></button>)}
+          {filteredAlbums.map((album) => <button key={album.id} className={`album-card ${selectedAlbum.id === album.id ? "selected" : ""}`} onClick={() => showAlbum(album)} onDoubleClick={() => playAlbum(album)}><Artwork album={album} /><b>{album.title}</b><span>{album.artist}</span></button>)}
         </div>
         <button className="shelf-arrow right" onClick={() => scrollShelf(1)} aria-label="Scroll albums right">›</button>
       </div>
       <section className="shelf-tracks">
         <div className="selected-album-bar"><Artwork album={selectedAlbum} /><div><p className="eyebrow">NOW SELECTED</p><h2>{selectedAlbum.title}</h2><span>{selectedAlbum.artist} · {selectedAlbum.year ?? "Year unknown"} · {selectedAlbum.tracks.length} songs</span></div>{albumActions}</div>
-        <div className="track-scroll-region" ref={trackScrollRef}>{trackRows(selectedAlbum.tracks)}</div>
+        <div className="track-scroll-region" ref={trackScrollRef}>{trackRows(selectedAlbum.tracks, false, false, true)}</div>
       </section>
     </>}
     {albumLayout === "detail" && <div className="album-detail classic-detail">
       <div className="detail-cover"><Artwork album={selectedAlbum} className="hero-art" /><div className="album-stepper"><button onClick={() => selectRelativeAlbum(-1)}>‹ Previous</button><button onClick={() => selectRelativeAlbum(1)}>Next ›</button></div></div>
       <div className="album-info"><p className="eyebrow">ALBUM</p><h2>{selectedAlbum.title}</h2><h3>{selectedAlbum.artist}</h3><p>{selectedAlbum.year ?? "Year unknown"} · {selectedAlbum.tracks.length} songs · {formatTime(selectedAlbum.tracks.reduce((sum, track) => sum + track.duration, 0))}</p>{albumActions}</div>
-      {trackRows(selectedAlbum.tracks)}
+      {trackRows(selectedAlbum.tracks, false, false, true)}
     </div>}
-    {albumLayout === "covers" && <div className="cover-grid">{filteredAlbums.map((album) => <button key={album.id} className={`cover-card ${selectedAlbum.id === album.id ? "selected" : ""}`} onClick={() => showAlbum(album)} onDoubleClick={() => album.tracks[0] && playTrack(album.tracks[0], [album.tracks[0]])}><Artwork album={album} /><b>{album.title}</b><span>{album.artist}</span><small>{album.year ?? ""}</small></button>)}</div>}
-    {albumLayout === "list" && <div className="album-list">{filteredAlbums.map((album) => <div key={album.id} className={`album-list-item ${expandedAlbumId === album.id ? "selected" : ""}`}><button className="album-list-summary" aria-expanded={expandedAlbumId === album.id} onClick={() => { setSelectedAlbumId(album.id); setExpandedAlbumId((current) => current === album.id ? null : album.id); }}><Artwork album={album} /><div><b>{album.title}</b><span>{album.artist}</span></div><span>{album.year ?? "—"}</span><span>{album.tracks.length} songs</span><time>{formatTime(album.tracks.reduce((sum, track) => sum + track.duration, 0))}</time><i>{expandedAlbumId === album.id ? "⌃" : "⌄"}</i></button>{expandedAlbumId === album.id && <div className="album-list-expanded">{trackRows(album.tracks)}</div>}</div>)}</div>}
+    {albumLayout === "covers" && <div className="cover-grid">{filteredAlbums.map((album) => <button key={album.id} className={`cover-card ${selectedAlbum.id === album.id ? "selected" : ""}`} onClick={() => showAlbum(album)} onDoubleClick={() => playAlbum(album)}><Artwork album={album} /><b>{album.title}</b><span>{album.artist}</span><small>{album.year ?? ""}</small></button>)}</div>}
+    {albumLayout === "list" && <div className="album-list">{filteredAlbums.map((album) => <div key={album.id} className={`album-list-item ${expandedAlbumId === album.id ? "selected" : ""}`}><button className="album-list-summary" aria-expanded={expandedAlbumId === album.id} onClick={() => { setSelectedAlbumId(album.id); setExpandedAlbumId((current) => current === album.id ? null : album.id); }}><Artwork album={album} /><div><b>{album.title}</b><span>{album.artist}</span></div><span>{album.year ?? "—"}</span><span>{album.tracks.length} songs</span><time>{formatTime(album.tracks.reduce((sum, track) => sum + track.duration, 0))}</time><i>{expandedAlbumId === album.id ? "⌃" : "⌄"}</i></button>{expandedAlbumId === album.id && <div className="album-list-expanded">{trackRows(album.tracks, false, false, true)}</div>}</div>)}</div>}
   </>;
 
   return <div className="app-shell">
@@ -623,13 +653,13 @@ export default function App() {
         {view === "artists" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">BROWSE</p><h1>Artists</h1></div>{!isNativeAndroid && <button className="clear-filter-button" onClick={() => void fetchAllMissingArtistArtwork()} disabled={artistArtworkBusy}>{artistArtworkBusy ? "Finding Photos…" : "Find Artist Photos"}</button>}</div><div className="artist-grid">{artists.filter((artist) => artist.name.toLowerCase().includes(query.toLowerCase())).map((artist) => { const artistAlbums = library.albums.filter((album) => album.artist === artist.name); const artistTracks = artistAlbums.flatMap((album) => album.tracks); return <article className="artist-card" key={artist.name}><button className="artist-open" onClick={() => showArtist(artist.name)} aria-label={`View albums by ${artist.name}`}><ArtistArtwork artist={artist} fallbackAlbum={artistAlbums.find((album) => album.artworkUrl !== null)} /><b title={artist.name}>{artist.name}</b><span>{artistAlbums.length} albums</span></button><button className="shuffle-button" onClick={() => shuffleAndPlay(artistTracks, artist.name)}>Shuffle</button></article>; })}</div></section>}
         {view === "genres" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">BROWSE</p><h1>Genres</h1></div><span>{genreGroups.length} {genreGroups.length === 1 ? "genre" : "genres"}</span></div>{filteredGenreGroups.length ? <div className="genre-grid">{filteredGenreGroups.map((group) => { const artistNames = Array.from(new Set(group.tracks.map((track) => track.artist))); return <article className="genre-card" key={group.name}><p className="eyebrow">GENRE</p><h2>{group.name}</h2><p>{group.tracks.length} {group.tracks.length === 1 ? "song" : "songs"} · {artistNames.length} {artistNames.length === 1 ? "artist" : "artists"}</p><span>{artistNames.slice(0, 4).join(" · ")}</span><button className="shuffle-button" onClick={() => shuffleAndPlay(group.tracks, group.name)}>Shuffle {group.name}</button></article>; })}</div> : <div className="filter-empty"><span>⌕</span><h2>No genres match</h2><p>Try another search.</p><button onClick={() => setQuery("")}>Clear Search</button></div>}</section>}
         {(view === "songs" || view === "playlist") && <section className="list-view"><div className="section-title"><div><p className="eyebrow">{view === "playlist" ? "PLAYLIST" : "LIBRARY"}</p><h1>{view === "playlist" ? activePlaylist?.name : "Songs"}</h1></div><div className="playlist-title-actions"><span>{view === "playlist" ? playlistTracks.length : allTracks.length} songs</span>{view === "playlist" && activePlaylist && <button className="shuffle-button" onClick={() => shuffleAndPlay(playlistTracks, activePlaylist.name)} disabled={playlistTracks.length === 0}>Shuffle Playlist</button>}{view === "playlist" && activePlaylist && <button className="delete-playlist-button" onClick={() => setPlaylistToDelete({ id: activePlaylist.id, name: activePlaylist.name })}>Delete Playlist</button>}</div></div>{trackRows((view === "playlist" ? playlistTracks : allTracks).filter((track) => `${track.title} ${track.artist} ${track.album} ${(track.genres ?? []).join(" ")}`.toLowerCase().includes(query.toLowerCase())), view === "playlist")}</section>}
-        {view === "queue" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">RUNNING ORDER</p><h1>Up Next</h1></div><span>{queue.length} {queue.length === 1 ? "track" : "tracks"}</span></div>{queue.length ? trackRows(queue, false, true) : <div className="queue-empty"><span>☷</span><h2>Your queue is empty</h2><p>Use the ••• action button on any track, then choose Play Next or Add to Queue.</p></div>}</section>}
+        {view === "queue" && <section className="list-view"><div className="section-title"><div><p className="eyebrow">RUNNING ORDER</p><h1>Up Next</h1></div><span>{queue.length} {queue.length === 1 ? "track" : "tracks"}</span></div>{queue.length ? trackRows(queue, false, true) : <div className="queue-empty"><span>☷</span><h2>Your queue is empty</h2><p>Use the ••• action button on any track to choose where it should enter the queue.</p></div>}</section>}
       </>}
     </main>
 
     <footer className="player-bar"><button className="now-playing" onClick={showNowPlayingAlbum} disabled={!currentAlbum} aria-label={currentAlbum ? `Open ${currentAlbum.title} by ${currentAlbum.artist}` : "Nothing playing"} title={currentAlbum ? "Open this album" : undefined}><Artwork album={currentAlbum} /><div><b>{currentTrack?.title ?? "Nothing playing"}</b><span>{currentTrack?.artist ?? "Choose a record"}</span></div></button><div className="transport"><div className="transport-controls"><button className={`transport-mode ${shuffleEnabled ? "active" : ""}`} onClick={toggleShuffle} disabled={allTracks.length === 0} aria-label={shuffleEnabled ? "Turn shuffle off" : "Turn shuffle on"} aria-pressed={shuffleEnabled} title={shuffleEnabled ? "Shuffle on" : "Shuffle off"}><span aria-hidden="true">⇄</span></button><button onClick={previousTrack} aria-label="Previous track" title="Previous">◀</button><button className="play" onClick={togglePlayback} aria-label={isPlaying ? "Pause" : "Play"}>{isPlaying ? "❚❚" : "▶"}</button><button onClick={nextTrack} aria-label="Next track" title="Next">▶</button><button className={`transport-mode repeat ${repeatMode !== "off" ? "active" : ""}`} onClick={cycleRepeatMode} aria-label={repeatMode === "off" ? "Repeat off. Turn on repeat all" : repeatMode === "all" ? "Repeat all. Turn on repeat one" : "Repeat one. Turn repeat off"} title={repeatMode === "off" ? "Repeat off" : repeatMode === "all" ? "Repeat all" : "Repeat one"}><span aria-hidden="true">↻</span>{repeatMode === "one" && <small aria-hidden="true">1</small>}</button></div><div className="timeline"><time>{formatTime(elapsed)}</time><input aria-label="Track position" type="range" min="0" max={currentTrack?.duration || 1} value={Math.min(elapsed, currentTrack?.duration || 1)} onChange={(event) => { audioRef.current.currentTime = Number(event.target.value); setElapsed(Number(event.target.value)); }} /><time>-{formatTime(Math.max(0, (currentTrack?.duration ?? 0) - elapsed))}</time></div></div><div className="volume"><span>◖</span><input aria-label="Volume" type="range" min="0" max="1" step="0.01" value={volume} onChange={(event) => setVolume(Number(event.target.value))} /><span>◗</span></div></footer>
 
-    {trackMenu && <div className="track-context-menu" role="menu" style={{ left: trackMenu.x, top: trackMenu.y }} onClick={(event) => event.stopPropagation()}><div><b>{trackMenu.track.title}</b><span>{trackMenu.track.artist}</span></div><button role="menuitem" onClick={() => { playNext(trackMenu.track); setTrackMenu(null); }}>▶ Play Next</button><button role="menuitem" onClick={() => { addToQueue(trackMenu.track); setTrackMenu(null); }}>＋ Add to Queue</button><button role="menuitem" onClick={() => { openPlaylistDialog(trackMenu.track); setTrackMenu(null); }}>♫ Add to Playlist…</button></div>}
+    {trackMenu && <div className="track-context-menu" role="menu" style={{ left: trackMenu.x, top: trackMenu.y }} onClick={(event) => event.stopPropagation()}><div><b>{trackMenu.track.title}</b><span>{trackMenu.track.artist}</span></div><button role="menuitem" onClick={() => { playNext(trackMenu.track); setTrackMenu(null); }}>▶ Play Next</button><button role="menuitem" onClick={() => { addAfterNext(trackMenu.track); setTrackMenu(null); }}>＋ Add After Next</button><button role="menuitem" onClick={() => { addToQueue(trackMenu.track); setTrackMenu(null); }}>＋ Add to End</button><button role="menuitem" onClick={() => { openPlaylistDialog(trackMenu.track); setTrackMenu(null); }}>♫ Add to Playlist…</button></div>}
 
     {playlistDialog && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPlaylistDialog(null); }}><div className="playlist-dialog" role="dialog" aria-modal="true" aria-label="Playlist chooser"><button className="modal-close" onClick={() => setPlaylistDialog(null)}>×</button><p className="eyebrow">PLAYLISTS</p><h2>{playlistDialog.track ? "Add to a playlist" : "New playlist"}</h2>{playlistDialog.track && <p className="dialog-track">“{playlistDialog.track.title}” by {playlistDialog.track.artist}</p>}{playlistDialog.track && library.playlists.length > 0 && <div className="playlist-choices">{library.playlists.map((playlist) => <button key={playlist.id} onClick={() => void choosePlaylist(playlist.id)}><span>♫</span><b>{playlist.name}</b><small>{playlist.trackIds.length} songs</small></button>)}</div>}{playlistDialog.track && library.playlists.length > 0 && <div className="or"><span>or create another</span></div>}<form onSubmit={(event) => { event.preventDefault(); void createPlaylist(); }}><input autoFocus value={newPlaylistName} onChange={(event) => setNewPlaylistName(event.target.value)} placeholder="Playlist name" /><button type="submit" disabled={!newPlaylistName.trim()}>{playlistDialog.track ? "Create & Add" : "Create Playlist"}</button></form></div></div>}
     {playlistToDelete && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPlaylistToDelete(null); }}><div className="playlist-dialog confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-playlist-title"><button className="modal-close" onClick={() => setPlaylistToDelete(null)}>×</button><p className="eyebrow">DELETE PLAYLIST</p><h2 id="delete-playlist-title">Delete “{playlistToDelete.name}”?</h2><p className="confirm-copy">This removes the playlist only. Your music files and albums will not be changed.</p><div className="confirm-actions"><button onClick={() => setPlaylistToDelete(null)}>Cancel</button><button className="danger" onClick={() => void deletePlaylist()}>Delete Playlist</button></div></div></div>}
