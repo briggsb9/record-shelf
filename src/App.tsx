@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Album, Artist, ArtworkProgress, ConnectionStatus, Library, NasSettingsInput, ScanProgress, Track } from "./types";
 import { isNativeAndroid, recordShelf, trackPlaybackUrl } from "./platform";
 
@@ -53,6 +53,7 @@ export default function App() {
   const [library, setLibrary] = useState<Library>({ root: null, albums: [], artists: [], playlists: [] });
   const [selectedAlbumId, setSelectedAlbumId] = useState<string | null>(null);
   const [expandedAlbumId, setExpandedAlbumId] = useState<string | null>(null);
+  const [expandedCoverAlbumId, setExpandedCoverAlbumId] = useState<string | null>(null);
   const [view, setView] = useState<View>("albums");
   const [albumLayout, setAlbumLayoutState] = useState<AlbumLayout>(() => (localStorage.getItem("album-layout") as AlbumLayout) || "shelf");
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
@@ -89,6 +90,7 @@ export default function App() {
   const mainRef = useRef<HTMLElement>(null);
   const shelfRef = useRef<HTMLDivElement>(null);
   const trackScrollRef = useRef<HTMLDivElement>(null);
+  const coverPanelRef = useRef<HTMLElement>(null);
   const playbackRequestRef = useRef(0);
   const loadedTrackIdRef = useRef<number | null>(null);
   const shouldPlayRef = useRef(false);
@@ -403,6 +405,12 @@ export default function App() {
   }, [albumLayout, selectedAlbumId]);
 
   useEffect(() => {
+    if (!expandedCoverAlbumId || albumLayout !== "covers" || !coverPanelRef.current) return;
+    const frame = requestAnimationFrame(() => coverPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
+    return () => cancelAnimationFrame(frame);
+  }, [albumLayout, expandedCoverAlbumId]);
+
+  useEffect(() => {
     if (!currentTrack || !("mediaSession" in navigator)) return;
     navigator.mediaSession.metadata = new MediaMetadata({ title: currentTrack.title, artist: currentTrack.artist, album: currentTrack.album, artwork: currentAlbum?.artworkUrl ? [{ src: currentAlbum.artworkUrl }] : [] });
     navigator.mediaSession.setActionHandler("play", () => { shouldPlayRef.current = true; void audioRef.current.play().catch(() => { shouldPlayRef.current = false; setIsPlaying(false); }); });
@@ -622,7 +630,13 @@ export default function App() {
       <div className="album-info"><p className="eyebrow">ALBUM</p><h2>{selectedAlbum.title}</h2><h3>{selectedAlbum.artist}</h3><p>{selectedAlbum.year ?? "Year unknown"} · {selectedAlbum.tracks.length} songs · {formatTime(selectedAlbum.tracks.reduce((sum, track) => sum + track.duration, 0))}</p>{albumActions}</div>
       {trackRows(selectedAlbum.tracks, false, false, true)}
     </div>}
-    {albumLayout === "covers" && <div className="cover-grid">{filteredAlbums.map((album) => <button key={album.id} className={`cover-card ${selectedAlbum.id === album.id ? "selected" : ""}`} onClick={() => showAlbum(album)} onDoubleClick={() => playAlbum(album)}><Artwork album={album} /><b>{album.title}</b><span>{album.artist}</span><small>{album.year ?? ""}</small></button>)}</div>}
+    {albumLayout === "covers" && <div className="cover-grid">{filteredAlbums.map((album) => <Fragment key={album.id}>
+      <button className={`cover-card ${expandedCoverAlbumId === album.id ? "selected" : ""}`} aria-expanded={expandedCoverAlbumId === album.id} onClick={() => { setSelectedAlbumId(album.id); setExpandedCoverAlbumId((current) => current === album.id ? null : album.id); }} onDoubleClick={() => { setExpandedCoverAlbumId(album.id); playAlbum(album); }}><Artwork album={album} /><b>{album.title}</b><span>{album.artist}</span><small>{album.year ?? ""}</small></button>
+      {expandedCoverAlbumId === album.id && <section ref={coverPanelRef} className="cover-album-expanded" aria-label={`Tracks on ${album.title}`}>
+        <div className="cover-expanded-header"><Artwork album={album} /><div className="cover-expanded-title"><p className="eyebrow">SELECTED ALBUM</p><h2>{album.title}</h2><span>{album.artist} · {album.year ?? "Year unknown"} · {album.tracks.length} songs · {formatTime(album.tracks.reduce((sum, track) => sum + track.duration, 0))}</span></div><div className="cover-expanded-actions">{albumActions}<button className="cover-expanded-close" onClick={() => setExpandedCoverAlbumId(null)} aria-label={`Close tracks for ${album.title}`} title="Close track list">×</button></div></div>
+        <div className="cover-expanded-tracks">{trackRows(album.tracks, false, false, true)}</div>
+      </section>}
+    </Fragment>)}</div>}
     {albumLayout === "list" && <div className="album-list">{filteredAlbums.map((album) => <div key={album.id} className={`album-list-item ${expandedAlbumId === album.id ? "selected" : ""}`}><button className="album-list-summary" aria-expanded={expandedAlbumId === album.id} onClick={() => { setSelectedAlbumId(album.id); setExpandedAlbumId((current) => current === album.id ? null : album.id); }}><Artwork album={album} /><div><b>{album.title}</b><span>{album.artist}</span></div><span>{album.year ?? "—"}</span><span>{album.tracks.length} songs</span><time>{formatTime(album.tracks.reduce((sum, track) => sum + track.duration, 0))}</time><i>{expandedAlbumId === album.id ? "⌃" : "⌄"}</i></button>{expandedAlbumId === album.id && <div className="album-list-expanded">{trackRows(album.tracks, false, false, true)}</div>}</div>)}</div>}
   </>;
 
