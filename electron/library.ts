@@ -6,7 +6,7 @@ import { parseFile } from "music-metadata";
 
 const AUDIO_EXTENSIONS = new Set([".aac", ".aif", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma"]);
 const COVER_NAMES = ["cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"];
-const MUSICBRAINZ_USER_AGENT = "RecordShelf/0.6.8 (desktop-music-player)";
+const MUSICBRAINZ_USER_AGENT = "RecordShelf/0.6.9 (desktop-music-player)";
 const MAX_ARTWORK_BYTES = 15 * 1024 * 1024;
 
 export type ScanProgress = { phase: "discovering" | "reading" | "finishing"; current: number; total: number; file?: string };
@@ -39,6 +39,30 @@ const parseGenres = (value: unknown): string[] => {
     const parsed = JSON.parse(String(value ?? "[]"));
     return Array.isArray(parsed) ? normaliseGenres(parsed.filter((item): item is string => typeof item === "string")) : [];
   } catch { return []; }
+};
+const editionNeutralTitle = (value: string): string => value
+  .replace(/[([][^\])]*(?:remaster(?:ed)?|deluxe|expanded|anniversary|special edition|bonus tracks?|disc|cd|import|explicit)\b[^\])]*[\])]/gi, " ")
+  .replace(/\b(?:\d{2,4}(?:st|nd|rd|th)? anniversary|remaster(?:ed)?|deluxe|expanded|special edition|bonus tracks?)\b/gi, " ")
+  .replace(/\s+/g, " ").trim();
+const canonicalAlbumTitle = (value: string): string => editionNeutralTitle(value)
+  .replace(/\bvol(?:ume)?\.?\s+(?:ii|2)\b/gi, "volume 2")
+  .replace(/\bvol(?:ume)?\.?\s+(?:iii|3)\b/gi, "volume 3")
+  .replace(/\bvol(?:ume)?\.?\s+(?:iv|4)\b/gi, "volume 4");
+const romanVolumeTitle = (value: string): string => canonicalAlbumTitle(value)
+  .replace(/\bvolume 2\b/gi, "Volume II")
+  .replace(/\bvolume 3\b/gi, "Volume III")
+  .replace(/\bvolume 4\b/gi, "Volume IV");
+const textSimilarity = (left: string, right: string): number => {
+  const a = normalise(left);
+  const b = normalise(right);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.includes(b) || b.includes(a)) return Math.min(a.length, b.length) / Math.max(a.length, b.length) * .9;
+  const leftTokens = new Set(a.split(" "));
+  const rightTokens = new Set(b.split(" "));
+  const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+  const union = new Set([...leftTokens, ...rightTokens]).size;
+  return union ? intersection / union : 0;
 };
 
 export class MusicLibrary {
@@ -289,35 +313,112 @@ export class MusicLibrary {
   }
 
   async fetchAlbumArtwork(albumId: string): Promise<ArtworkResult> {
-    const row = this.db.prepare("SELECT title, artist FROM albums WHERE id = ?").get(albumId) as Row | undefined;
+    const row = this.db.prepare("SELECT title, artist, year FROM albums WHERE id = ?").get(albumId) as Row | undefined;
     if (!row) return { success: false, message: "Album not found", albumId };
     const title = String(row.title);
     const artist = String(row.artist);
+    const year = row.year == null ? null : Number(row.year);
+    const trackRows = this.db.prepare("SELECT title FROM tracks WHERE album_id = ? ORDER BY disc_number, track_number, title COLLATE NOCASE").all(albumId) as Row[];
+    const trackTitles = trackRows.map((track) => String(track.title));
+    const trackCount = trackTitles.length;
+    type ArtistCredit = { name?: string; artist?: { name?: string } };
+    type MbRelease = {
+      id: string; title: string; score?: number; date?: string; country?: string;
+      "artist-credit"?: ArtistCredit[]; "release-group"?: { id?: string; title?: string };
+      media?: Array<{ "track-count"?: number; tracks?: Array<{ title?: string; recording?: { title?: string } }> }>;
+    };
+    type Candidate = MbRelease & { matchScore: number; trackEvidence: number };
+    const creditedArtist = (release: MbRelease) => (release["artist-credit"] ?? []).map((credit) => credit.name ?? credit.artist?.name ?? "").filter(Boolean).join(" ");
+    const candidateTrackCount = (release: MbRelease) => (release.media ?? []).reduce((sum, medium) => sum + Number(medium["track-count"] ?? medium.tracks?.length ?? 0), 0);
+    const scoreCandidate = (release: MbRelease, trackEvidence = 0): number => {
+      const canonicalSourceTitle = canonicalAlbumTitle(title);
+      const canonicalReleaseTitle = canonicalAlbumTitle(release.title);
+      const titleScore = Math.max(textSimilarity(title, release.title), textSimilarity(canonicalSourceTitle, canonicalReleaseTitle));
+      const artistScore = textSimilarity(artist, creditedArtist(release));
+      const releaseYear = release.date ? Number(release.date.slice(0, 4)) : null;
+      const yearScore = year && releaseYear ? (Math.abs(year - releaseYear) === 0 ? 8 : Math.abs(year - releaseYear) <= 1 ? 5 : Math.abs(year - releaseYear) <= 3 ? 1 : -4) : 0;
+      const releaseTrackCount = candidateTrackCount(release);
+      const countScore = trackCount && releaseTrackCount ? (trackCount === releaseTrackCount ? 12 : Math.abs(trackCount - releaseTrackCount) === 1 ? 5 : Math.abs(trackCount - releaseTrackCount) <= 3 ? 1 : -5) : 0;
+      const compilation = normalise(artist) === "various artists" || normalise(artist) === "unknown artist";
+      const genericTitle = new Set(["greatest hits", "best of", "live", "unknown album", "the collection"]).has(normalise(canonicalSourceTitle));
+      const exactTitleAndYearBonus = !genericTitle && normalise(canonicalSourceTitle) === normalise(canonicalReleaseTitle) && year && releaseYear === year ? 15 : 0;
+      return titleScore * (compilation ? 55 : 45) + artistScore * (compilation ? 10 : 30) + Math.min(100, Number(release.score ?? 0)) * .1 + yearScore + countScore + trackEvidence + exactTitleAndYearBonus;
+    };
+    const searches: string[] = [];
+    const cleanedTitle = editionNeutralTitle(title);
+    const romanTitle = romanVolumeTitle(title);
+    const usefulArtist = !["various artists", "unknown artist"].includes(normalise(artist));
+    searches.push(`release:\"${escapeLucene(title)}\"${usefulArtist ? ` AND artist:\"${escapeLucene(artist)}\"` : ""}`);
+    if (normalise(cleanedTitle) !== normalise(title)) searches.push(`release:\"${escapeLucene(cleanedTitle)}\"${usefulArtist ? ` AND artist:\"${escapeLucene(artist)}\"` : ""}`);
+    if (normalise(romanTitle) !== normalise(cleanedTitle)) searches.push(`release:\"${escapeLucene(romanTitle)}\"${usefulArtist ? ` AND artist:\"${escapeLucene(artist)}\"` : ""}`);
+    searches.push(`release:${escapeLucene(cleanedTitle || title)}${usefulArtist ? ` AND artist:\"${escapeLucene(artist)}\"` : ""}`);
+    searches.push(`release:\"${escapeLucene(cleanedTitle || title)}\"`);
+
     try {
-      const searchUrl = new URL("https://musicbrainz.org/ws/2/release-group/");
-      searchUrl.searchParams.set("query", `releasegroup:\"${escapeLucene(title)}\" AND artist:\"${escapeLucene(artist)}\"`);
-      searchUrl.searchParams.set("fmt", "json");
-      searchUrl.searchParams.set("limit", "5");
-      const searchResponse = await this.fetchMusicBrainz(searchUrl);
-      if (!searchResponse.ok) throw new Error(`MusicBrainz returned ${searchResponse.status}`);
-      const data = await searchResponse.json() as { "release-groups"?: Array<{ id: string; title: string; score?: number; "artist-credit"?: Array<{ name: string }> }> };
-      const candidates = data["release-groups"] ?? [];
-      const exact = candidates.find((candidate) => {
-        const candidateArtist = candidate["artist-credit"]?.map((credit) => credit.name).join(" ") ?? "";
-        return normalise(candidate.title) === normalise(title) && normalise(candidateArtist).includes(normalise(artist));
-      });
-      const match = exact ?? candidates.find((candidate) => Number(candidate.score ?? 0) >= 85);
-      if (!match) return { success: false, message: `No confident artwork match for ${title}`, albumId };
-      const coverResponse = await fetchWithTimeout(`https://coverartarchive.org/release-group/${match.id}/front-500`, { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT, Accept: "image/*" }, redirect: "follow" });
-      if (!coverResponse.ok) return { success: false, message: `No front cover is available for ${title}`, albumId };
-      const contentType = coverResponse.headers.get("content-type") ?? "image/jpeg";
-      const extension = contentType.includes("png") ? ".png" : contentType.includes("webp") ? ".webp" : ".jpg";
-      const destination = path.join(this.artworkDirectory, `${albumId}-online${extension}`);
-      const coverBytes = new Uint8Array(await coverResponse.arrayBuffer());
-      if (coverBytes.byteLength > MAX_ARTWORK_BYTES) throw new Error("The downloaded cover was unexpectedly large");
-      await writeFile(destination, coverBytes);
-      this.db.prepare("UPDATE albums SET artwork_path = ?, artwork_source = 'musicbrainz', artwork_updated_at = ?, musicbrainz_id = ? WHERE id = ?").run(destination, Date.now(), match.id, albumId);
-      return { success: true, message: `Artwork found for ${title}`, albumId };
+      const candidatesById = new Map<string, Candidate>();
+      for (const query of [...new Set(searches)]) {
+        const searchUrl = new URL("https://musicbrainz.org/ws/2/release/");
+        searchUrl.searchParams.set("query", query);
+        searchUrl.searchParams.set("fmt", "json");
+        searchUrl.searchParams.set("limit", "25");
+        const searchResponse = await this.fetchMusicBrainz(searchUrl);
+        if (!searchResponse.ok) throw new Error(`MusicBrainz returned ${searchResponse.status}`);
+        const data = await searchResponse.json() as { releases?: MbRelease[] };
+        for (const release of data.releases ?? []) {
+          const scored: Candidate = { ...release, matchScore: scoreCandidate(release), trackEvidence: 0 };
+          const previous = candidatesById.get(release.id);
+          if (!previous || scored.matchScore > previous.matchScore) candidatesById.set(release.id, scored);
+        }
+        if ([...candidatesById.values()].some((candidate) => candidate.matchScore >= 86)) break;
+      }
+
+      let candidates = [...candidatesById.values()].sort((left, right) => right.matchScore - left.matchScore);
+      if (candidates[0] && candidates[0].matchScore < 86 && candidates[0].matchScore >= 55 && trackTitles.length > 0) {
+        for (const candidate of candidates.slice(0, 3)) {
+          const lookupUrl = new URL(`https://musicbrainz.org/ws/2/release/${candidate.id}`);
+          lookupUrl.searchParams.set("inc", "recordings+release-groups+artist-credits");
+          lookupUrl.searchParams.set("fmt", "json");
+          const lookupResponse = await this.fetchMusicBrainz(lookupUrl);
+          if (!lookupResponse.ok) continue;
+          const detail = await lookupResponse.json() as MbRelease;
+          const candidateTitles = (detail.media ?? []).flatMap((medium) => medium.tracks ?? []).map((track) => track.title ?? track.recording?.title ?? "").filter(Boolean);
+          const evidence = trackTitles.length && candidateTitles.length
+            ? trackTitles.reduce((sum, trackTitle) => sum + (candidateTitles.some((candidateTitle) => textSimilarity(trackTitle, candidateTitle) >= .88) ? 1 : 0), 0) / trackTitles.length * 28
+            : 0;
+          candidate.trackEvidence = evidence;
+          candidate.matchScore = scoreCandidate({ ...candidate, ...detail }, evidence);
+          candidate.media = detail.media ?? candidate.media;
+          candidate["release-group"] = detail["release-group"] ?? candidate["release-group"];
+        }
+        candidates = candidates.sort((left, right) => right.matchScore - left.matchScore);
+      }
+
+      const confident = candidates.filter((candidate) => candidate.matchScore >= 72).slice(0, 8);
+      if (confident.length === 0) return { success: false, message: `No confident artwork match for ${title}`, albumId };
+      const attemptedUrls = new Set<string>();
+      for (const candidate of confident) {
+        const urls = [
+          `https://coverartarchive.org/release/${candidate.id}/front-500`,
+          candidate["release-group"]?.id ? `https://coverartarchive.org/release-group/${candidate["release-group"].id}/front-500` : null,
+        ].filter((url): url is string => !!url && !attemptedUrls.has(url));
+        for (const url of urls) {
+          attemptedUrls.add(url);
+          const coverResponse = await fetchWithTimeout(url, { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT, Accept: "image/*" }, redirect: "follow" });
+          if (!coverResponse.ok) continue;
+          const contentType = coverResponse.headers.get("content-type") ?? "image/jpeg";
+          if (!contentType.startsWith("image/")) continue;
+          const extension = contentType.includes("png") ? ".png" : contentType.includes("webp") ? ".webp" : ".jpg";
+          const destination = path.join(this.artworkDirectory, `${albumId}-online${extension}`);
+          const coverBytes = new Uint8Array(await coverResponse.arrayBuffer());
+          if (coverBytes.byteLength > MAX_ARTWORK_BYTES) continue;
+          await writeFile(destination, coverBytes);
+          const matchedId = candidate["release-group"]?.id ?? candidate.id;
+          this.db.prepare("UPDATE albums SET artwork_path = ?, artwork_source = 'musicbrainz', artwork_updated_at = ?, musicbrainz_id = ? WHERE id = ?").run(destination, Date.now(), matchedId, albumId);
+          const evidenceLabel = candidate.trackEvidence >= 12 ? " using its track list" : "";
+          return { success: true, message: `Artwork found automatically for ${title}${evidenceLabel}`, albumId };
+        }
+      }
+      return { success: false, message: `No front cover is available for the confident matches for ${title}`, albumId };
     } catch (error) {
       return { success: false, message: error instanceof Error ? error.message : "Artwork lookup failed", albumId };
     }
@@ -403,10 +504,23 @@ export class MusicLibrary {
 
   private async fetchMusicBrainz(url: URL): Promise<Response> {
     const request = this.musicBrainzQueue.then(async () => {
-      const wait = Math.max(0, 1100 - (Date.now() - this.lastMusicBrainzRequest));
-      if (wait > 0) await delay(wait);
-      this.lastMusicBrainzRequest = Date.now();
-      return fetchWithTimeout(url, { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT, Accept: "application/json" } });
+      let response: Response | null = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const wait = Math.max(0, 1100 - (Date.now() - this.lastMusicBrainzRequest));
+        if (wait > 0) await delay(wait);
+        this.lastMusicBrainzRequest = Date.now();
+        try {
+          response = await fetchWithTimeout(url, { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT, Accept: "application/json" } });
+        } catch (error) {
+          if (attempt === 2) throw error;
+          await delay(1500 * (attempt + 1));
+          continue;
+        }
+        if (![429, 502, 503, 504].includes(response.status) || attempt === 2) return response;
+        const retryAfter = Number(response.headers.get("retry-after"));
+        await delay(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1500 * (attempt + 1));
+      }
+      return response!;
     });
     this.musicBrainzQueue = request.then(() => undefined, () => undefined);
     return request;

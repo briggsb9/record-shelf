@@ -63,7 +63,7 @@ To build a debug APK directly, run `npm run android:apk`. The output is `android
 - **Covers** displays a traditional artwork grid.
 - **List** displays compact album rows that expand to reveal their tracks.
 
-Record Shelf uses embedded artwork first, then common folder images such as `cover.jpg` and `folder.jpg`. Use **Find Artwork** to retrieve missing covers from MusicBrainz and the Cover Art Archive. Individual albums can also be refreshed. Online artwork requests send the album and artist names to MusicBrainz and are limited to one search per second.
+Record Shelf uses embedded artwork first, then common folder images such as `cover.jpg` and `folder.jpg`. Use **Find Artwork** to retrieve missing covers from MusicBrainz and the Cover Art Archive. Individual albums can also be refreshed. The automatic matcher progressively tries exact and edition-neutral titles, Arabic/Roman volume variants and individual releases; it scores candidates using artist, year, track count and, when needed, track-title evidence before accepting artwork. Temporary MusicBrainz failures are retried automatically while respecting its one-request-per-second limit.
 
 The Artists and Genres screens have explicit **Shuffle** controls, and every playlist has its own **Shuffle Playlist** action. A shuffled collection becomes the visible **Up Next** running order and begins playing immediately. Genres come from the music files' embedded tags; tracks without a genre are grouped under **Unknown Genre**. Desktop libraries created before v0.5.0 reread metadata once on the next rescan to populate the new genre catalogue.
 
@@ -86,7 +86,7 @@ Windows can use a mapped drive or UNC share. Guest shares connect without sendin
 
 Record Shelf does not upload or copy your music library. Catalogue data and downloaded artwork are stored locally by the app. Playback reads the original files from the selected local folder or mounted share.
 
-Online artwork features are optional. When used, they send artist and album search terms to MusicBrainz, the Cover Art Archive and, for artist portraits, Wikipedia or Wikimedia Commons. Record Shelf currently includes no analytics or advertising SDK.
+Online artwork features are optional. When used, they send artist and album search terms to MusicBrainz and the Cover Art Archive. When an album match is ambiguous, a small number of its track titles may also be sent to MusicBrainz to identify the correct release. Artist portrait searches use Wikipedia or Wikimedia Commons. Record Shelf currently includes no analytics or advertising SDK.
 
 ## Keyboard controls
 
