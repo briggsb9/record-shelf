@@ -74,6 +74,7 @@ export default function App() {
     return saved === "all" || saved === "one" ? saved : "off";
   });
   const [elapsed, setElapsed] = useState(0);
+  const [playbackDuration, setPlaybackDuration] = useState(0);
   const [volume, setVolume] = useState(0.82);
   const [playlistDialog, setPlaylistDialog] = useState<{ track: Track | null } | null>(null);
   const [playlistToDelete, setPlaylistToDelete] = useState<{ id: string; name: string } | null>(null);
@@ -101,6 +102,7 @@ export default function App() {
 
   const allTracks = useMemo(() => library.albums.flatMap((album) => album.tracks), [library.albums]);
   const currentAlbum = useMemo(() => library.albums.find((album) => album.id === currentTrack?.albumId), [library.albums, currentTrack]);
+  const effectiveDuration = playbackDuration > 0 && Number.isFinite(playbackDuration) ? playbackDuration : currentTrack?.duration ?? 0;
   const filteredAlbums = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     return library.albums.filter((album) => (!selectedArtist || album.artist === selectedArtist) && (!needle || `${album.title} ${album.artist} ${album.year ?? ""} ${album.tracks.map((track) => `${track.title} ${(track.genres ?? []).join(" ")}`).join(" ")}`.toLocaleLowerCase().includes(needle)));
@@ -153,6 +155,7 @@ export default function App() {
     }
     setCurrentTrack(track);
     setElapsed(0);
+    setPlaybackDuration(track.duration > 0 ? track.duration : 0);
     void trackPlaybackUrl(track).then((url) => {
       if (requestId !== playbackRequestRef.current) return;
       audio.src = url;
@@ -224,6 +227,19 @@ export default function App() {
       audio.pause();
     }
   }, [allTracks, currentTrack, playTrack, queue, selectedAlbum]);
+
+  const seekTo = useCallback((seconds: number) => {
+    if (!currentTrack || !Number.isFinite(seconds)) return;
+    const audio = audioRef.current;
+    const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : effectiveDuration;
+    const position = Math.max(0, Math.min(seconds, duration || 0));
+    try {
+      audio.currentTime = position;
+      setElapsed(position);
+    } catch {
+      setNotice({ kind: "error", message: "This track is not ready to seek yet. Try again once playback has started." });
+    }
+  }, [currentTrack, effectiveDuration]);
 
   const nextTrack = useCallback(() => {
     if (!currentTrack || queue.length === 0) return;
@@ -359,11 +375,16 @@ export default function App() {
     const playing = () => setIsPlaying(true);
     const paused = () => setIsPlaying(false);
     const time = () => setElapsed(audio.currentTime);
+    const durationChanged = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) setPlaybackDuration(audio.duration);
+    };
     const failed = () => { shouldPlayRef.current = false; loadedTrackIdRef.current = null; setIsPlaying(false); setNotice({ kind: "error", message: "Playback stopped because the audio file could not be read." }); };
     audio.addEventListener("play", playing); audio.addEventListener("pause", paused); audio.addEventListener("timeupdate", time);
+    audio.addEventListener("loadedmetadata", durationChanged); audio.addEventListener("durationchange", durationChanged);
     audio.addEventListener("ended", handleTrackEnded); audio.addEventListener("error", failed);
     return () => {
       audio.removeEventListener("play", playing); audio.removeEventListener("pause", paused); audio.removeEventListener("timeupdate", time);
+      audio.removeEventListener("loadedmetadata", durationChanged); audio.removeEventListener("durationchange", durationChanged);
       audio.removeEventListener("ended", handleTrackEnded); audio.removeEventListener("error", failed);
     };
   }, [handleTrackEnded]);
@@ -671,7 +692,7 @@ export default function App() {
       </>}
     </main>
 
-    <footer className="player-bar"><button className="now-playing" onClick={showNowPlayingAlbum} disabled={!currentAlbum} aria-label={currentAlbum ? `Open ${currentAlbum.title} by ${currentAlbum.artist}` : "Nothing playing"} title={currentAlbum ? "Open this album" : undefined}><Artwork album={currentAlbum} /><div><b>{currentTrack?.title ?? "Nothing playing"}</b><span>{currentTrack?.artist ?? "Choose a record"}</span></div></button><div className="transport"><div className="transport-controls"><button className={`transport-mode ${shuffleEnabled ? "active" : ""}`} onClick={toggleShuffle} disabled={allTracks.length === 0} aria-label={shuffleEnabled ? "Turn shuffle off" : "Turn shuffle on"} aria-pressed={shuffleEnabled} title={shuffleEnabled ? "Shuffle on" : "Shuffle off"}><span aria-hidden="true">⇄</span></button><button onClick={previousTrack} aria-label="Previous track" title="Previous">◀</button><button className="play" onClick={togglePlayback} aria-label={isPlaying ? "Pause" : "Play"}>{isPlaying ? "❚❚" : "▶"}</button><button onClick={nextTrack} aria-label="Next track" title="Next">▶</button><button className={`transport-mode repeat ${repeatMode !== "off" ? "active" : ""}`} onClick={cycleRepeatMode} aria-label={repeatMode === "off" ? "Repeat off. Turn on repeat all" : repeatMode === "all" ? "Repeat all. Turn on repeat one" : "Repeat one. Turn repeat off"} title={repeatMode === "off" ? "Repeat off" : repeatMode === "all" ? "Repeat all" : "Repeat one"}><span aria-hidden="true">↻</span>{repeatMode === "one" && <small aria-hidden="true">1</small>}</button></div><div className="timeline"><time>{formatTime(elapsed)}</time><input aria-label="Track position" type="range" min="0" max={currentTrack?.duration || 1} value={Math.min(elapsed, currentTrack?.duration || 1)} onChange={(event) => { audioRef.current.currentTime = Number(event.target.value); setElapsed(Number(event.target.value)); }} /><time>-{formatTime(Math.max(0, (currentTrack?.duration ?? 0) - elapsed))}</time></div></div><div className="volume"><span>◖</span><input aria-label="Volume" type="range" min="0" max="1" step="0.01" value={volume} onChange={(event) => setVolume(Number(event.target.value))} /><span>◗</span></div></footer>
+    <footer className="player-bar"><button className="now-playing" onClick={showNowPlayingAlbum} disabled={!currentAlbum} aria-label={currentAlbum ? `Open ${currentAlbum.title} by ${currentAlbum.artist}` : "Nothing playing"} title={currentAlbum ? "Open this album" : undefined}><Artwork album={currentAlbum} /><div><b>{currentTrack?.title ?? "Nothing playing"}</b><span>{currentTrack?.artist ?? "Choose a record"}</span></div></button><div className="transport"><div className="transport-controls"><button className={`transport-mode ${shuffleEnabled ? "active" : ""}`} onClick={toggleShuffle} disabled={allTracks.length === 0} aria-label={shuffleEnabled ? "Turn shuffle off" : "Turn shuffle on"} aria-pressed={shuffleEnabled} title={shuffleEnabled ? "Shuffle on" : "Shuffle off"}><span aria-hidden="true">⇄</span></button><button onClick={previousTrack} aria-label="Previous track" title="Previous">◀</button><button className="play" onClick={togglePlayback} aria-label={isPlaying ? "Pause" : "Play"}>{isPlaying ? "❚❚" : "▶"}</button><button onClick={nextTrack} aria-label="Next track" title="Next">▶</button><button className={`transport-mode repeat ${repeatMode !== "off" ? "active" : ""}`} onClick={cycleRepeatMode} aria-label={repeatMode === "off" ? "Repeat off. Turn on repeat all" : repeatMode === "all" ? "Repeat all. Turn on repeat one" : "Repeat one. Turn repeat off"} title={repeatMode === "off" ? "Repeat off" : repeatMode === "all" ? "Repeat all" : "Repeat one"}><span aria-hidden="true">↻</span>{repeatMode === "one" && <small aria-hidden="true">1</small>}</button></div><div className="timeline"><time>{formatTime(elapsed)}</time><input aria-label="Track position" title={currentTrack ? `Seek in ${currentTrack.title}` : "No track selected"} type="range" min="0" max={effectiveDuration || 1} step="0.1" value={Math.min(elapsed, effectiveDuration || 1)} disabled={!currentTrack} onInput={(event) => seekTo(Number(event.currentTarget.value))} onChange={(event) => seekTo(Number(event.currentTarget.value))} /><time>-{formatTime(Math.max(0, effectiveDuration - elapsed))}</time></div></div><div className="volume"><span>◖</span><input aria-label="Volume" type="range" min="0" max="1" step="0.01" value={volume} onChange={(event) => setVolume(Number(event.target.value))} /><span>◗</span></div></footer>
 
     {trackMenu && <div className="track-context-menu" role="menu" style={{ left: trackMenu.x, top: trackMenu.y }} onClick={(event) => event.stopPropagation()}><div><b>{trackMenu.track.title}</b><span>{trackMenu.track.artist}</span></div><button role="menuitem" onClick={() => { playNext(trackMenu.track); setTrackMenu(null); }}>▶ Play Next</button><button role="menuitem" onClick={() => { addAfterNext(trackMenu.track); setTrackMenu(null); }}>＋ Add After Next</button><button role="menuitem" onClick={() => { addToQueue(trackMenu.track); setTrackMenu(null); }}>＋ Add to End</button><button role="menuitem" onClick={() => { openPlaylistDialog(trackMenu.track); setTrackMenu(null); }}>♫ Add to Playlist…</button></div>}
 
