@@ -1,6 +1,8 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, net, powerMonitor, protocol } from "electron";
+import { createReadStream } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { MusicLibrary, type ArtworkProgress, type ScanProgress } from "./library.js";
 import { NasConnectionManager, type ConnectionStatus, type NasSettingsInput } from "./nas.js";
@@ -23,6 +25,51 @@ let library: MusicLibrary;
 let nas: NasConnectionManager;
 let reconnectTimer: NodeJS.Timeout | null = null;
 let connectionStatus: ConnectionStatus = { state: "local", message: "Using a local or already mounted folder", root: null };
+
+const AUDIO_CONTENT_TYPES: Record<string, string> = {
+  ".aac": "audio/aac", ".aif": "audio/aiff", ".aiff": "audio/aiff", ".alac": "audio/mp4",
+  ".flac": "audio/flac", ".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".ogg": "audio/ogg",
+  ".opus": "audio/ogg", ".wav": "audio/wav", ".wma": "audio/x-ms-wma",
+};
+
+function parseByteRange(value: string, size: number): { start: number; end: number } | null {
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(value.trim());
+  if (!match || size <= 0) return null;
+  const [, startText, endText] = match;
+  if (!startText && !endText) return null;
+  if (!startText) {
+    const suffixLength = Number(endText);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return null;
+    return { start: Math.max(0, size - suffixLength), end: size - 1 };
+  }
+  const start = Number(startText);
+  const requestedEnd = endText ? Number(endText) : size - 1;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start < 0 || start >= size || requestedEnd < start) return null;
+  return { start, end: Math.min(requestedEnd, size - 1) };
+}
+
+async function audioFileResponse(filePath: string, request: Request): Promise<Response> {
+  const details = await stat(filePath);
+  if (!details.isFile()) return new Response("Track not found", { status: 404 });
+  const size = details.size;
+  const contentType = AUDIO_CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? "application/octet-stream";
+  const rangeValue = request.headers.get("range");
+  const range = rangeValue ? parseByteRange(rangeValue, size) : null;
+  if (rangeValue && !range) return new Response(null, { status: 416, headers: { "Accept-Ranges": "bytes", "Content-Range": `bytes */${size}` } });
+  const start = range?.start ?? 0;
+  const end = range?.end ?? Math.max(0, size - 1);
+  const headers = new Headers({
+    "Accept-Ranges": "bytes",
+    "Content-Length": String(size === 0 ? 0 : end - start + 1),
+    "Content-Type": contentType,
+    "Cache-Control": "no-store",
+  });
+  if (range) headers.set("Content-Range", `bytes ${start}-${end}/${size}`);
+  if (request.method === "HEAD" || size === 0) return new Response(null, { status: range ? 206 : 200, headers });
+  const fileStream = createReadStream(filePath, { start, end });
+  request.signal.addEventListener("abort", () => fileStream.destroy(), { once: true });
+  return new Response(Readable.toWeb(fileStream) as ReadableStream<Uint8Array>, { status: range ? 206 : 200, headers });
+}
 
 async function connectNas(force = false): Promise<ConnectionStatus> {
   let status = await nas.connect(force);
@@ -115,7 +162,9 @@ app.whenReady().then(async () => {
     const id = Number(url.pathname.slice(1));
     await connectNas();
     const filePath = library.getTrackPath(id);
-    return filePath ? net.fetch(pathToFileURL(filePath).href, { headers: request.headers }) : new Response("Track not found", { status: 404 });
+    if (!filePath) return new Response("Track not found", { status: 404 });
+    try { return await audioFileResponse(filePath, request); }
+    catch { return new Response("Track unavailable", { status: 404 }); }
   });
   protocol.handle("music-art", (request) => {
     const url = new URL(request.url);
