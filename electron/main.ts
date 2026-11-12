@@ -208,6 +208,10 @@ app.whenReady().then(async () => {
     library.removeFromPlaylist(playlistId, trackId);
     return library.snapshot();
   });
+  ipcMain.handle("favourite:set", (_event, trackId: number, favourite: boolean) => {
+    library.setFavourite(trackId, favourite);
+    return library.snapshot();
+  });
   ipcMain.handle("artwork:fetch-album", async (_event, albumId: string) => {
     const result = await library.fetchAlbumArtwork(albumId);
     return { result, library: library.snapshot() };

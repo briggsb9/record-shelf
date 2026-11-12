@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("recordShelf", {
   deletePlaylist: (playlistId: string) => ipcRenderer.invoke("playlist:delete", playlistId),
   addToPlaylist: (playlistId: string, trackId: number) => ipcRenderer.invoke("playlist:add-track", playlistId, trackId),
   removeFromPlaylist: (playlistId: string, trackId: number) => ipcRenderer.invoke("playlist:remove-track", playlistId, trackId),
+  setFavourite: (trackId: number, favourite: boolean) => ipcRenderer.invoke("favourite:set", trackId, favourite),
   fetchAlbumArtwork: (albumId: string) => ipcRenderer.invoke("artwork:fetch-album", albumId),
   fetchMissingArtwork: () => ipcRenderer.invoke("artwork:fetch-missing"),
   fetchArtistArtwork: (artist: string) => ipcRenderer.invoke("artwork:fetch-artist", artist),

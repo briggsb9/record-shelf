@@ -6,7 +6,7 @@ import { parseFile } from "music-metadata";
 
 const AUDIO_EXTENSIONS = new Set([".aac", ".aif", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma"]);
 const COVER_NAMES = ["cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"];
-const MUSICBRAINZ_USER_AGENT = "RecordShelf/0.6.12 (desktop-music-player)";
+const MUSICBRAINZ_USER_AGENT = "RecordShelf/0.6.13 (desktop-music-player)";
 const MAX_ARTWORK_BYTES = 15 * 1024 * 1024;
 
 export type ScanProgress = { phase: "discovering" | "reading" | "finishing"; current: number; total: number; file?: string };
@@ -103,6 +103,10 @@ export class MusicLibrary {
         track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE, position INTEGER NOT NULL,
         PRIMARY KEY (playlist_id, position)
       );
+      CREATE TABLE IF NOT EXISTS favourite_tracks (
+        track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
     `);
     this.ensureAlbumColumn("artwork_source", "TEXT");
     this.ensureAlbumColumn("artwork_updated_at", "INTEGER NOT NULL DEFAULT 0");
@@ -159,7 +163,7 @@ export class MusicLibrary {
     return row?.image_path ? String(row.image_path) : null;
   }
 
-  snapshot(): { root: string | null; albums: Album[]; artists: Artist[]; playlists: Playlist[] } {
+  snapshot(): { root: string | null; albums: Album[]; artists: Artist[]; playlists: Playlist[]; favouriteTrackIds: number[] } {
     const albumRows = this.db.prepare("SELECT * FROM albums ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE").all() as Row[];
     const trackRows = this.db.prepare(`SELECT id, album_id, path, title, artist, album, album_artist, track_number, disc_number, duration, year, genres FROM tracks ORDER BY album_artist COLLATE NOCASE, album COLLATE NOCASE, disc_number, track_number, title COLLATE NOCASE`).all() as Row[];
     const tracksByAlbum = new Map<string, Track[]>();
@@ -201,7 +205,8 @@ export class MusicLibrary {
       list.push(Number(row.track_id));
       idsByPlaylist.set(id, list);
     }
-    return { root: this.getLibraryRoot(), albums, artists, playlists: playlistRows.map((row) => ({ id: String(row.id), name: String(row.name), trackIds: idsByPlaylist.get(String(row.id)) ?? [] })) };
+    const favouriteTrackIds = (this.db.prepare("SELECT track_id FROM favourite_tracks ORDER BY created_at, track_id").all() as Row[]).map((row) => Number(row.track_id));
+    return { root: this.getLibraryRoot(), albums, artists, playlists: playlistRows.map((row) => ({ id: String(row.id), name: String(row.name), trackIds: idsByPlaylist.get(String(row.id)) ?? [] })), favouriteTrackIds };
   }
 
   createPlaylist(name: string): Playlist {
@@ -223,6 +228,11 @@ export class MusicLibrary {
 
   removeFromPlaylist(playlistId: string, trackId: number): void {
     this.db.prepare("DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?").run(playlistId, trackId);
+  }
+
+  setFavourite(trackId: number, favourite: boolean): void {
+    if (favourite) this.db.prepare("INSERT OR IGNORE INTO favourite_tracks (track_id) VALUES (?)").run(trackId);
+    else this.db.prepare("DELETE FROM favourite_tracks WHERE track_id = ?").run(trackId);
   }
 
   async scan(root: string, onProgress: (progress: ScanProgress) => void): Promise<void> {

@@ -33,7 +33,7 @@ The first scan reads tags and artwork sequentially to avoid overwhelming a NAS. 
 
 ## Test the Android app
 
-The Android build supports phones and tablets with touch-sized controls, responsive album layouts, playlists, artist/genre/playlist shuffle, and the visible **•••** action button for Play Next, Add to Queue and Add to Playlist. It scans through Android's system folder picker, stores its catalogue in private app storage, retains the folder permission across restarts, and caches embedded album art inside the app.
+The Android build supports phones and tablets with touch-sized controls, responsive album layouts, persistent song favourites, playlists, artist/genre/playlist shuffle, and the visible **•••** action button for Play Next, Add to Queue and Add to Playlist. It scans through Android's system folder picker, stores its catalogue in private app storage, retains the folder permission across restarts, and caches embedded album art inside the app.
 
 To get an APK without installing Android Studio:
 
@@ -66,6 +66,8 @@ To build a debug APK directly, run `npm run android:apk`. The output is `android
 Record Shelf uses embedded artwork first, then common folder images such as `cover.jpg` and `folder.jpg`. Use **Find Artwork** to retrieve missing covers from MusicBrainz and the Cover Art Archive. Individual albums can also be refreshed. The automatic matcher progressively tries exact and edition-neutral titles, Arabic/Roman volume variants and individual releases; it scores candidates using artist, year, track count and, when needed, track-title evidence before accepting artwork. Temporary MusicBrainz failures are retried automatically while respecting its one-request-per-second limit.
 
 The Artists and Genres screens have explicit **Shuffle** controls, and every playlist has its own **Shuffle Playlist** action. A shuffled collection becomes the visible **Up Next** running order and begins playing immediately. Genres come from the music files' embedded tags; tracks without a genre are grouped under **Unknown Genre**. Desktop libraries created before v0.5.0 reread metadata once on the next rescan to populate the new genre catalogue.
+
+Tap or click the star beside a song—or beside the currently playing song—to mark it as a favourite. **Favourites** is a built-in auto-playlist that immediately collects every starred track and includes its own shuffle control. Favourite choices are stored in the local catalogue and persist across restarts and rescans; they do not alter the original music files.
 
 The transport bar also provides shuffle and repeat controls. Repeat cycles through off, repeat all and repeat one. Clicking the now-playing cover, title or artist at the bottom left opens that album directly in the Album detail view.
 

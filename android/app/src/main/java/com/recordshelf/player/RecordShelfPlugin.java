@@ -128,7 +128,7 @@ public class RecordShelfPlugin extends Plugin {
                     throw new IllegalStateException("No audio files were visible. The saved catalogue was retained in case the folder or NAS is temporarily unavailable.");
                 }
 
-                JSONObject library = buildLibrary(rootValue, documents, previous.optJSONArray("playlists"));
+                JSONObject library = buildLibrary(rootValue, documents, previous.optJSONArray("playlists"), previous.optJSONArray("favouriteTrackIds"));
                 saveLibrary(library);
                 preferences().edit().putString(ROOT_KEY, rootValue).apply();
                 call.resolve(envelope(library));
@@ -210,6 +210,25 @@ public class RecordShelfPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void setFavourite(PluginCall call) {
+        try {
+            Integer trackId = call.getInt("trackId");
+            if (trackId == null) throw new JSONException("A track id is required.");
+            boolean favourite = Boolean.TRUE.equals(call.getBoolean("favourite", false));
+            JSONObject library = loadLibrary();
+            JSONArray ids = ensureArray(library, "favouriteTrackIds");
+            for (int index = ids.length() - 1; index >= 0; index--) {
+                if (ids.optInt(index, -1) == trackId) ids.remove(index);
+            }
+            if (favourite) ids.put(trackId);
+            saveLibrary(library);
+            call.resolve(envelope(library));
+        } catch (Exception error) {
+            call.reject("The favourite could not be changed.", error);
+        }
+    }
+
+    @PluginMethod
     public void fetchAlbumArtwork(PluginCall call) {
         try {
             JSONObject library = loadLibrary();
@@ -287,7 +306,7 @@ public class RecordShelfPlugin extends Plugin {
         }
     }
 
-    private JSONObject buildLibrary(String root, List<AudioDocument> documents, JSONArray savedPlaylists) throws Exception {
+    private JSONObject buildLibrary(String root, List<AudioDocument> documents, JSONArray savedPlaylists, JSONArray savedFavourites) throws Exception {
         Map<String, JSONObject> albums = new HashMap<>();
         Map<String, List<JSONObject>> tracksByAlbum = new HashMap<>();
         File artworkDirectory = new File(getContext().getFilesDir(), "artwork");
@@ -361,6 +380,7 @@ public class RecordShelfPlugin extends Plugin {
         library.put("root", root);
         library.put("albums", albumArray);
         library.put("playlists", savedPlaylists == null ? new JSONArray() : savedPlaylists);
+        library.put("favouriteTrackIds", savedFavourites == null ? new JSONArray() : savedFavourites);
         return library;
     }
 
@@ -451,6 +471,7 @@ public class RecordShelfPlugin extends Plugin {
             empty.put("root", root == null ? JSONObject.NULL : root);
             empty.put("albums", new JSONArray());
             empty.put("playlists", new JSONArray());
+            empty.put("favouriteTrackIds", new JSONArray());
             return empty;
         }
         try (FileInputStream input = new FileInputStream(file); ByteArrayOutputStream output = new ByteArrayOutputStream()) {

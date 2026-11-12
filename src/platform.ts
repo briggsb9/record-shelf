@@ -10,6 +10,7 @@ type NativeRecordShelfPlugin = {
   deletePlaylist(options: { playlistId: string }): Promise<NativeEnvelope<Library>>;
   addToPlaylist(options: { playlistId: string; trackId: number }): Promise<NativeEnvelope<Library>>;
   removeFromPlaylist(options: { playlistId: string; trackId: number }): Promise<NativeEnvelope<Library>>;
+  setFavourite(options: { trackId: number; favourite: boolean }): Promise<NativeEnvelope<Library>>;
   fetchAlbumArtwork(options: { albumId: string }): Promise<{ result: ArtworkResult; library: Library }>;
   fetchMissingArtwork(): Promise<{ result: { found: number; missing: number }; library: Library }>;
   fetchArtistArtwork(options: { artist: string }): Promise<{ result: ArtworkResult; library: Library }>;
@@ -27,9 +28,11 @@ function normaliseLibrary(library: Library): Library {
     ...album,
     tracks: album.tracks.map((track) => ({ ...track, genres: Array.isArray(track.genres) ? track.genres.filter((genre): genre is string => typeof genre === "string" && genre.trim().length > 0) : [] })),
   }));
-  if (!isNativeAndroid) return { ...library, albums, artists };
+  const favouriteTrackIds = Array.isArray(library.favouriteTrackIds) ? library.favouriteTrackIds.filter((id): id is number => Number.isInteger(id)) : [];
+  if (!isNativeAndroid) return { ...library, albums, artists, favouriteTrackIds };
   return {
     ...library,
+    favouriteTrackIds,
     albums: albums.map((album) => ({
       ...album,
       artworkUrl: album.artworkUrl ? Capacitor.convertFileSrc(album.artworkUrl) : null,
@@ -57,6 +60,7 @@ const mobileBridge: Window["recordShelf"] = {
   deletePlaylist: async (playlistId) => normaliseLibrary((await NativeRecordShelf.deletePlaylist({ playlistId })).value),
   addToPlaylist: async (playlistId, trackId) => normaliseLibrary((await NativeRecordShelf.addToPlaylist({ playlistId, trackId })).value),
   removeFromPlaylist: async (playlistId, trackId) => normaliseLibrary((await NativeRecordShelf.removeFromPlaylist({ playlistId, trackId })).value),
+  setFavourite: async (trackId, favourite) => normaliseLibrary((await NativeRecordShelf.setFavourite({ trackId, favourite })).value),
   fetchAlbumArtwork: async (albumId) => {
     const response = await NativeRecordShelf.fetchAlbumArtwork({ albumId });
     return { ...response, library: normaliseLibrary(response.library) };
